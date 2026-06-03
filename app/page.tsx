@@ -29,6 +29,7 @@ import type {
   IntelligenceReport,
   MacroRiskEvent,
   OpportunityEngineResponse,
+  PersistedAppState,
   PolymarketOpportunity,
   PolymarketScanResponse,
   SavedDailyReport,
@@ -53,6 +54,14 @@ import {
   saveResearchFeed,
   setupToPaperTrade
 } from "@/lib/client/paper-trades";
+import {
+  clearLocalAppState,
+  clearServerAppState,
+  loadLocalAppState,
+  loadServerAppState,
+  saveLocalAppState,
+  saveServerAppState
+} from "@/lib/client/app-state";
 
 type Tab =
   | "Top Opportunities"
@@ -81,6 +90,14 @@ type OpportunityAlertStatus = {
   state: "idle" | "sent" | "skipped" | "failed";
   message: string;
   warnings: string[];
+};
+
+type PersistenceStatus = {
+  state: "idle" | "saved" | "loading" | "failed";
+  source: "server" | "local" | "none";
+  lastUpdated: string | null;
+  lastScanAt: string | null;
+  message: string;
 };
 
 const tabs: Tab[] = [
@@ -152,6 +169,13 @@ export default function Home() {
   const [sendOpportunityTelegram, setSendOpportunityTelegram] = useState(false);
   const [paperTradeStorage, setPaperTradeStorage] = useState("localStorage fallback");
   const [beginnerMode, setBeginnerMode] = useState(true);
+  const [persistenceStatus, setPersistenceStatus] = useState<PersistenceStatus>({
+    state: "idle",
+    source: "none",
+    lastUpdated: null,
+    lastScanAt: null,
+    message: "No saved data loaded yet."
+  });
   const [opportunityAlertStatus, setOpportunityAlertStatus] = useState<OpportunityAlertStatus>({
     state: "idle",
     message: "Telegram alert skipped",
@@ -160,15 +184,105 @@ export default function Home() {
 
   useEffect(() => {
     void checkSetup();
-    void loadSavedReportsNow();
+    void hydratePersistedAppState();
     void hydratePaperTrades();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const analytics = useMemo(() => analyzePaperTrades(paperTrades), [paperTrades]);
 
+  function makePersistedState(overrides: Partial<PersistedAppState> = {}): PersistedAppState {
+    const updatedAt = new Date().toISOString();
+    return {
+      updatedAt,
+      lastScanAt: persistenceStatus.lastScanAt,
+      engine,
+      stockScan,
+      polymarketScan: polyScan,
+      crossMarket,
+      savedReports,
+      researchFeed: feed,
+      paperTrades,
+      settings: {
+        sendOpportunityTelegram,
+        beginnerMode
+      },
+      ...overrides
+    };
+  }
+
+  function applyPersistedState(state: PersistedAppState, source: "server" | "local") {
+    setEngine(state.engine);
+    setStockScan(state.stockScan);
+    setPolyScan(state.polymarketScan);
+    setCrossMarket(state.crossMarket);
+    setSavedReports(state.savedReports);
+    setFeed((state.researchFeed as ResearchFeedItem[] | undefined) ?? []);
+    setPaperTrades((state.paperTrades as PaperTrade[] | undefined) ?? []);
+    setSendOpportunityTelegram(Boolean(state.settings?.sendOpportunityTelegram));
+    setBeginnerMode(state.settings?.beginnerMode ?? true);
+    setPersistenceStatus({
+      state: "saved",
+      source,
+      lastUpdated: state.updatedAt,
+      lastScanAt: state.lastScanAt,
+      message: source === "server" ? "Loaded saved data from Netlify Blob." : "Loaded saved data from localStorage fallback."
+    });
+  }
+
+  function persistAppState(overrides: Partial<PersistedAppState> = {}) {
+    const snapshot = makePersistedState(overrides);
+    saveLocalAppState(snapshot);
+    setPersistenceStatus({
+      state: "saved",
+      source: "local",
+      lastUpdated: snapshot.updatedAt,
+      lastScanAt: snapshot.lastScanAt,
+      message: "Saved locally. Server save pending."
+    });
+    void saveServerAppState(snapshot).then((result) => {
+      setPersistenceStatus({
+        state: result.available ? "saved" : "failed",
+        source: result.available ? "server" : "local",
+        lastUpdated: snapshot.updatedAt,
+        lastScanAt: snapshot.lastScanAt,
+        message: result.available ? "Saved to Netlify Blob and localStorage." : `Saved locally. ${result.warning ?? "Server persistence unavailable."}`
+      });
+    });
+  }
+
+  async function hydratePersistedAppState() {
+    setPersistenceStatus((current) => ({ ...current, state: "loading", message: "Loading saved data..." }));
+    const local = loadLocalAppState();
+    if (local) applyPersistedState(local, "local");
+
+    const server = await loadServerAppState();
+    const serverState = server.state;
+    if (server.available && serverState) {
+      const shouldUseServer = !local || new Date(serverState.updatedAt).getTime() >= new Date(local.updatedAt).getTime();
+      if (shouldUseServer) {
+        applyPersistedState(serverState, "server");
+        saveLocalAppState(serverState);
+        return;
+      }
+    }
+
+    if (!local) {
+      setPersistenceStatus({
+        state: server.available ? "idle" : "failed",
+        source: server.available ? "server" : "local",
+        lastUpdated: null,
+        lastScanAt: null,
+        message: server.available ? "No saved scan data found yet." : `Using local fallback. ${server.warning ?? "Server persistence unavailable."}`
+      });
+      await loadSavedReportsNow();
+    }
+  }
+
   function persistTrades(nextTrades: PaperTrade[]) {
     setPaperTrades(nextTrades);
     savePaperTrades(nextTrades);
+    persistAppState({ paperTrades: nextTrades });
     void saveServerPaperTrades(nextTrades).then((result) => {
       setPaperTradeStorage(result.available ? "Netlify Blob + localStorage" : `localStorage fallback${result.warning ? `: ${result.warning}` : ""}`);
     });
@@ -186,12 +300,66 @@ export default function Home() {
   }
 
   function persistFeed(items: ResearchFeedItem[]) {
-    setFeed(items.slice(0, 200));
-    saveResearchFeed(items);
+    const nextItems = items.slice(0, 200);
+    setFeed(nextItems);
+    saveResearchFeed(nextItems);
+    persistAppState({ researchFeed: nextItems });
   }
 
   function addFeedItem(item: Omit<ResearchFeedItem, "id" | "timestamp">) {
     persistFeed([{ ...item, id: `${item.source}-${item.symbol}-${Date.now()}`, timestamp: new Date().toISOString() }, ...feed]);
+  }
+
+  function updateOpportunityTelegramSetting(enabled: boolean) {
+    setSendOpportunityTelegram(enabled);
+    persistAppState({
+      settings: {
+        sendOpportunityTelegram: enabled,
+        beginnerMode
+      }
+    });
+  }
+
+  function updateBeginnerMode(enabled: boolean) {
+    setBeginnerMode(enabled);
+    persistAppState({
+      settings: {
+        sendOpportunityTelegram,
+        beginnerMode: enabled
+      }
+    });
+  }
+
+  async function refreshSavedData() {
+    await hydratePersistedAppState();
+  }
+
+  async function clearSavedData() {
+    clearLocalAppState();
+    savePaperTrades([]);
+    saveResearchFeed([]);
+    setEngine(null);
+    setStockScan(null);
+    setPolyScan(null);
+    setCrossMarket(null);
+    setSavedReports(null);
+    setFeed([]);
+    setPaperTrades([]);
+    setSendOpportunityTelegram(false);
+    setBeginnerMode(true);
+    setOpportunityAlertStatus({ state: "idle", message: "Telegram alert skipped", warnings: [] });
+    setPersistenceStatus({
+      state: "idle",
+      source: "none",
+      lastUpdated: null,
+      lastScanAt: null,
+      message: "Saved data cleared."
+    });
+    await Promise.all([
+      clearServerAppState(),
+      saveServerPaperTrades([]),
+      fetch("/.netlify/functions/reports", { method: "DELETE" }).catch(() => null)
+    ]);
   }
 
   async function checkSetup() {
@@ -231,7 +399,9 @@ export default function Home() {
     try {
       const response = await fetch("/.netlify/functions/reports");
       if (!response.ok) throw new Error("Saved reports fetch failed.");
-      setSavedReports((await response.json()) as SavedReportsResponse);
+      const reports = (await response.json()) as SavedReportsResponse;
+      setSavedReports(reports);
+      persistAppState({ savedReports: reports });
     } catch {
       setSavedReports(null);
     }
@@ -267,6 +437,7 @@ export default function Home() {
       if (!response.ok) throw new Error(payload.error ?? "Stock scan failed.");
       const scan = payload as ScanResponse;
       setStockScan(scan);
+      persistAppState({ stockScan: scan, lastScanAt: scan.generatedAt });
       scan.setups.forEach((setupReport) =>
         addFeedItem({
           source: "stock",
@@ -299,15 +470,23 @@ export default function Home() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error ?? "Opportunity engine failed.");
       const result = payload as OpportunityEngineResponse;
-      setEngine(result);
-      setStockScan(result.stockScan);
-      setPolyScan(result.polymarketScan);
-      setCrossMarket({
+      const nextCrossMarket = {
         generatedAt: result.generatedAt,
         stockScan: result.stockScan,
         stockError: result.stockScan ? null : result.warnings.find((warning) => warning.includes("Stock opportunity scan skipped")) ?? null,
         polymarketScan: result.polymarketScan,
         insights: result.crossMarketInsights
+      };
+      setEngine(result);
+      setStockScan(result.stockScan);
+      setPolyScan(result.polymarketScan);
+      setCrossMarket(nextCrossMarket);
+      persistAppState({
+        engine: result,
+        stockScan: result.stockScan,
+        polymarketScan: result.polymarketScan,
+        crossMarket: nextCrossMarket,
+        lastScanAt: result.generatedAt
       });
       result.opportunities.slice(0, 12).forEach((opportunity) =>
         addFeedItem({
@@ -433,6 +612,7 @@ export default function Home() {
       if (!response.ok) throw new Error(payload.error ?? "Polymarket scan failed.");
       const scan = payload as PolymarketScanResponse;
       setPolyScan(scan);
+      persistAppState({ polymarketScan: scan, lastScanAt: scan.generatedAt });
       scan.opportunities.forEach((market) =>
         addFeedItem({
           source: "polymarket",
@@ -459,7 +639,9 @@ export default function Home() {
       const response = await fetch("/.netlify/functions/run-cross-market-scan", { method: "POST" });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error ?? "Cross-market scan failed.");
-      setCrossMarket(payload as CrossMarketResponse);
+      const nextCrossMarket = payload as CrossMarketResponse;
+      setCrossMarket(nextCrossMarket);
+      persistAppState({ crossMarket: nextCrossMarket, lastScanAt: nextCrossMarket.generatedAt });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Cross-market scan failed.");
     } finally {
@@ -557,10 +739,13 @@ export default function Home() {
         </nav>
 
         {error ? <ErrorBanner message={error} /> : null}
-        <label className="flex w-fit items-center gap-3 rounded-md border border-terminal-line bg-terminal-panel px-3 py-2 text-sm text-terminal-muted">
-          <input type="checkbox" checked={beginnerMode} onChange={(event) => setBeginnerMode(event.target.checked)} className="h-4 w-4 accent-terminal-cyan" />
-          Beginner Mode
-        </label>
+        <PersistenceBar
+          status={persistenceStatus}
+          beginnerMode={beginnerMode}
+          onBeginnerMode={updateBeginnerMode}
+          onRefresh={refreshSavedData}
+          onClear={clearSavedData}
+        />
 
         {activeTab === "Top Opportunities" ? (
           <TopOpportunitiesPanel
@@ -598,7 +783,7 @@ export default function Home() {
             loading={loading === "alert"}
             onSendTest={sendTestAlert}
             sendOpportunityTelegram={sendOpportunityTelegram}
-            onToggleOpportunityTelegram={setSendOpportunityTelegram}
+            onToggleOpportunityTelegram={updateOpportunityTelegramSetting}
             opportunityAlertStatus={opportunityAlertStatus}
             diagnostics={savedReports?.diagnostics ?? null}
           />
@@ -641,6 +826,44 @@ function ErrorBanner({ message }: { message: string }) {
     <div className="rounded-md border border-terminal-red/40 bg-terminal-red/10 p-4 text-sm text-terminal-red">
       <div className="flex items-center gap-2 font-semibold"><AlertTriangle className="h-4 w-4" />{message}</div>
       <p className="mt-2 text-terminal-muted">Check Setup for required keys and remember Polymarket public data needs no key.</p>
+    </div>
+  );
+}
+
+function PersistenceBar({
+  status,
+  beginnerMode,
+  onBeginnerMode,
+  onRefresh,
+  onClear
+}: {
+  status: PersistenceStatus;
+  beginnerMode: boolean;
+  onBeginnerMode: (enabled: boolean) => void;
+  onRefresh: () => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3 rounded-md border border-terminal-line bg-terminal-panel p-3 text-sm text-terminal-muted lg:flex-row lg:items-center lg:justify-between">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={badgeClass(status.state === "saved" ? "green" : status.state === "failed" ? "red" : "yellow")}>
+          {status.state === "saved" ? "Saved" : status.state === "loading" ? "Loading saved data" : status.state === "failed" ? "Local fallback" : "Not saved yet"}
+        </span>
+        <span className={badgeClass(status.source === "server" ? "green" : status.source === "local" ? "yellow" : "blue")}>
+          {status.source === "server" ? "Server" : status.source === "local" ? "Local fallback" : "No source"}
+        </span>
+        <span>Last scan: {status.lastScanAt ? new Date(status.lastScanAt).toLocaleString() : "none"}</span>
+        <span>Last updated: {status.lastUpdated ? new Date(status.lastUpdated).toLocaleString() : "none"}</span>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-2">
+          <input type="checkbox" checked={beginnerMode} onChange={(event) => onBeginnerMode(event.target.checked)} className="h-4 w-4 accent-terminal-cyan" />
+          Beginner Mode
+        </label>
+        <button onClick={onRefresh} className="rounded-md border border-terminal-line px-3 py-2 text-sm hover:text-white">Refresh data</button>
+        <button onClick={onClear} className="rounded-md border border-terminal-red/40 px-3 py-2 text-sm text-terminal-red hover:bg-terminal-red/10">Clear saved data</button>
+      </div>
+      <p className="lg:hidden">{status.message}</p>
     </div>
   );
 }

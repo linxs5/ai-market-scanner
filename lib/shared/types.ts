@@ -440,3 +440,34 @@ export type SavedReportsResponse = {
   diagnostics: ReportDiagnostics;
   warning?: string;
 };
+
+export type PersistedAppSettings = {
+  sendOpportunityTelegram: boolean;
+  beginnerMode: boolean;
+};
+
+export type PersistedAppState = {
+  updatedAt: string;
+  lastScanAt: string | null;
+  source?: "server" | "local";
+  engine: OpportunityEngineResponse | null;
+  stockScan: ScanResponse | null;
+  polymarketScan: PolymarketScanResponse | null;
+  crossMarket: {
+    generatedAt: string;
+    stockScan: ScanResponse | null;
+    stockError: string | null;
+    polymarketScan: PolymarketScanResponse;
+    insights: CrossMarketInsight[];
+  } | null;
+  savedReports: SavedReportsResponse | null;
+  researchFeed: unknown[];
+  paperTrades: unknown[];
+  settings: PersistedAppSettings;
+};
+
+export type AppStatePersistenceResponse = {
+  available: boolean;
+  state: PersistedAppState | null;
+  warning?: string;
+};

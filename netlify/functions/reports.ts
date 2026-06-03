@@ -1,7 +1,7 @@
 import type { Handler } from "@netlify/functions";
 import { z } from "zod";
 import type { DailyReportType, SavedDailyReport } from "../../lib/shared/types";
-import { buildDailyReport, loadSavedReports, saveDailyReport } from "../../lib/server/daily-reports";
+import { buildDailyReport, clearSavedReports, loadSavedReports, saveDailyReport } from "../../lib/server/daily-reports";
 import { errorResponse, jsonResponse } from "../../lib/server/http";
 import { runOpportunityEngine } from "../../lib/server/opportunity-engine";
 
@@ -18,6 +18,15 @@ export const handler: Handler = async (event) => {
   if (event.httpMethod === "GET") {
     const limit = Number(event.queryStringParameters?.limit ?? 20);
     return jsonResponse(await loadSavedReports(Number.isFinite(limit) ? limit : 20));
+  }
+
+  if (event.httpMethod === "DELETE") {
+    try {
+      await clearSavedReports();
+      return jsonResponse(await loadSavedReports());
+    } catch (error) {
+      return errorResponse("Saved reports clear failed.", 500, error instanceof Error ? error.message : error);
+    }
   }
 
   if (event.httpMethod === "POST") {

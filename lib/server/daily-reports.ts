@@ -236,6 +236,10 @@ export async function saveDailyReport(report: SavedDailyReport) {
   return report;
 }
 
+export async function clearSavedReports() {
+  await store().delete(REPORTS_KEY);
+}
+
 export function telegramStatusFromAlert(alert: AlertResponse | null, error?: string | null): SavedDailyReport["telegram"] {
   return {
     attempted: true,
