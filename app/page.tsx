@@ -33,7 +33,8 @@ import type {
   PolymarketScanResponse,
   ScanResponse,
   SetupCheckResponse,
-  SetupReport
+  SetupReport,
+  UnifiedOpportunity
 } from "@/lib/shared/types";
 import {
   analyzePaperTrades,
@@ -66,6 +67,12 @@ type CrossMarketResponse = {
   stockError: string | null;
   polymarketScan: PolymarketScanResponse;
   insights: CrossMarketInsight[];
+};
+
+type OpportunityAlertStatus = {
+  state: "idle" | "sent" | "skipped" | "failed";
+  message: string;
+  warnings: string[];
 };
 
 const tabs: Tab[] = [
@@ -123,6 +130,12 @@ export default function Home() {
   const [loading, setLoading] = useState<"stock" | "polymarket" | "cross" | "alert" | "opportunity" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [alertResult, setAlertResult] = useState<AlertResponse | null>(null);
+  const [sendOpportunityTelegram, setSendOpportunityTelegram] = useState(false);
+  const [opportunityAlertStatus, setOpportunityAlertStatus] = useState<OpportunityAlertStatus>({
+    state: "idle",
+    message: "Telegram alert skipped",
+    warnings: []
+  });
 
   useEffect(() => {
     void checkSetup();
@@ -207,6 +220,11 @@ export default function Home() {
     setLoading("opportunity");
     setError(null);
     setActiveTab("Top Opportunities");
+    setOpportunityAlertStatus({
+      state: "idle",
+      message: sendOpportunityTelegram ? "Telegram alert pending" : "Telegram alert skipped",
+      warnings: []
+    });
     try {
       const response = await fetch("/.netlify/functions/run-opportunity-engine", { method: "POST" });
       const payload = await response.json();
@@ -233,10 +251,106 @@ export default function Home() {
           followUpNeeded: opportunity.monitorNext[0] ?? opportunity.invalidation
         })
       );
+      await maybeSendOpportunityTelegramAlerts(result.opportunities);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Opportunity engine failed.");
+      setOpportunityAlertStatus({
+        state: "skipped",
+        message: "Telegram alert skipped",
+        warnings: ["Opportunity scan did not finish, so no alert was sent."]
+      });
     } finally {
       setLoading(null);
+    }
+  }
+
+  function selectTelegramAlertOpportunities(opportunities: UnifiedOpportunity[]) {
+    const selected = new Map<string, UnifiedOpportunity>();
+    const sorted = [...opportunities].sort((a, b) => b.score - a.score);
+    const best = sorted[0];
+    if (best) selected.set(best.id, best);
+
+    sorted
+      .filter((opportunity) => opportunity.score >= 85)
+      .forEach((opportunity) => {
+        if (selected.size < 3) selected.set(opportunity.id, opportunity);
+      });
+
+    sorted
+      .filter((opportunity) => opportunity.riskLevel === "high" && opportunity.score >= 80)
+      .forEach((opportunity) => {
+        if (selected.size < 3) selected.set(opportunity.id, opportunity);
+      });
+
+    return [...selected.values()].slice(0, 3);
+  }
+
+  function buildOpportunityAlertMessage(opportunity: UnifiedOpportunity) {
+    return [
+      `Market: ${opportunity.symbol}`,
+      `Score: ${opportunity.score}`,
+      `Risk: ${opportunity.riskLevel}`,
+      `Confidence: ${opportunity.confidence}`,
+      `Catalyst: ${opportunity.catalyst.type} - ${opportunity.catalyst.whyItMatters}`,
+      `Bull/YES case: ${opportunity.bullCase}`,
+      `Bear/NO case: ${opportunity.bearCase}`,
+      `Trap risk: ${opportunity.trap}`,
+      `Invalidation: ${opportunity.invalidation}`,
+      `Suggested paper action only: ${opportunity.suggestedPaperAction}`,
+      "Research only. Manual approval only. Never auto-trade."
+    ].join("\n\n");
+  }
+
+  async function maybeSendOpportunityTelegramAlerts(opportunities: UnifiedOpportunity[]) {
+    if (!sendOpportunityTelegram) {
+      setOpportunityAlertStatus({ state: "skipped", message: "Telegram alert skipped", warnings: ["Toggle is off."] });
+      return;
+    }
+
+    const selected = selectTelegramAlertOpportunities(opportunities);
+    if (!selected.length) {
+      setOpportunityAlertStatus({ state: "skipped", message: "Telegram alert skipped", warnings: ["No opportunities met alert rules."] });
+      return;
+    }
+
+    const warnings: string[] = [];
+    let sentCount = 0;
+
+    try {
+      for (const opportunity of selected) {
+        const response = await fetch("/.netlify/functions/send-alert", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: `Opportunity alert: ${opportunity.symbol}`,
+            message: buildOpportunityAlertMessage(opportunity),
+            severity: opportunity.riskLevel,
+            alertType:
+              opportunity.riskLevel === "high" && opportunity.score >= 80
+                ? "risk warning"
+                : opportunity.marketType === "polymarket"
+                  ? "polymarket mover"
+                  : "stock mover",
+            channels: ["telegram"]
+          })
+        });
+        const payload = (await response.json()) as AlertResponse & { error?: string };
+        if (!response.ok) throw new Error(payload.error ?? "Telegram alert failed.");
+        warnings.push(...payload.warnings);
+        if (payload.sent) sentCount += 1;
+      }
+
+      setOpportunityAlertStatus({
+        state: sentCount > 0 ? "sent" : "skipped",
+        message: sentCount > 0 ? `Telegram alert sent (${sentCount})` : "Telegram alert skipped",
+        warnings: sentCount > 0 ? warnings : [...warnings, "Telegram channel was not configured or delivered no messages."]
+      });
+    } catch (caught) {
+      setOpportunityAlertStatus({
+        state: "failed",
+        message: "Telegram alert failed",
+        warnings: [caught instanceof Error ? caught.message : "Telegram alert failed."]
+      });
     }
   }
 
@@ -376,7 +490,12 @@ export default function Home() {
         {error ? <ErrorBanner message={error} /> : null}
 
         {activeTab === "Top Opportunities" ? (
-          <TopOpportunitiesPanel engine={engine} loading={loading === "opportunity"} onRun={runOpportunityEngineNow} />
+          <TopOpportunitiesPanel
+            engine={engine}
+            loading={loading === "opportunity"}
+            onRun={runOpportunityEngineNow}
+            alertStatus={opportunityAlertStatus}
+          />
         ) : null}
         {activeTab === "Stock Scanner" ? (
           <StockScanner scan={stockScan} loading={loading === "stock"} onRun={runStockScan} onPaperTrade={addStockTrade} setup={setup} />
@@ -391,7 +510,15 @@ export default function Home() {
           <ReportsPanel engine={engine} loading={loading === "opportunity"} onRun={runOpportunityEngineNow} />
         ) : null}
         {activeTab === "Alerts" ? (
-          <AlertsPanel setup={setup} result={alertResult} loading={loading === "alert"} onSendTest={sendTestAlert} />
+          <AlertsPanel
+            setup={setup}
+            result={alertResult}
+            loading={loading === "alert"}
+            onSendTest={sendTestAlert}
+            sendOpportunityTelegram={sendOpportunityTelegram}
+            onToggleOpportunityTelegram={setSendOpportunityTelegram}
+            opportunityAlertStatus={opportunityAlertStatus}
+          />
         ) : null}
         {activeTab === "Paper Trades" ? (
           <PaperTradesPanel trades={paperTrades} analytics={analytics} onOutcome={updateOutcome} />
@@ -435,7 +562,17 @@ function ErrorBanner({ message }: { message: string }) {
   );
 }
 
-function TopOpportunitiesPanel({ engine, loading, onRun }: { engine: OpportunityEngineResponse | null; loading: boolean; onRun: () => void }) {
+function TopOpportunitiesPanel({
+  engine,
+  loading,
+  onRun,
+  alertStatus
+}: {
+  engine: OpportunityEngineResponse | null;
+  loading: boolean;
+  onRun: () => void;
+  alertStatus: OpportunityAlertStatus;
+}) {
   const top = engine?.opportunities.slice(0, 10) ?? [];
   return (
     <section className="grid gap-4">
@@ -446,6 +583,7 @@ function TopOpportunitiesPanel({ engine, loading, onRun }: { engine: Opportunity
         <Metric icon={<ShieldAlert />} label="Research mode" value="Manual only" />
       </div>
       <ScannerHeader title="Opportunity intelligence engine" subtitle="Unifies stock movers, Polymarket movers, catalysts, macro risk, reports, and cross-market hypotheses." onRun={onRun} loading={loading} />
+      <AlertStatusPanel status={alertStatus} />
       {loading ? <LoadingState text="Ranking stock and Polymarket research opportunities..." /> : null}
       {!loading && !engine ? <EmptyState text="Run the opportunity engine to rank multi-market research ideas." /> : null}
       {engine ? <WarningList items={engine.warnings} /> : null}
@@ -714,7 +852,37 @@ function CrossMarketPanel({ crossMarket, loading, onRun }: { crossMarket: CrossM
   );
 }
 
-function AlertsPanel({ setup, result, loading, onSendTest }: { setup: SetupCheckResponse | null; result: AlertResponse | null; loading: boolean; onSendTest: () => void }) {
+function AlertStatusPanel({ status }: { status: OpportunityAlertStatus }) {
+  const tone = status.state === "sent" ? "green" : status.state === "failed" ? "red" : "yellow";
+  return (
+    <div className={`rounded-md border p-3 text-sm ${tone === "green" ? "border-terminal-green/40 bg-terminal-green/10 text-terminal-green" : tone === "red" ? "border-terminal-red/40 bg-terminal-red/10 text-terminal-red" : "border-terminal-amber/40 bg-terminal-amber/10 text-terminal-amber"}`}>
+      <div className="font-semibold">{status.message}</div>
+      {status.warnings.length ? (
+        <ul className="mt-2 grid gap-1">
+          {status.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+function AlertsPanel({
+  setup,
+  result,
+  loading,
+  onSendTest,
+  sendOpportunityTelegram,
+  onToggleOpportunityTelegram,
+  opportunityAlertStatus
+}: {
+  setup: SetupCheckResponse | null;
+  result: AlertResponse | null;
+  loading: boolean;
+  onSendTest: () => void;
+  sendOpportunityTelegram: boolean;
+  onToggleOpportunityTelegram: (enabled: boolean) => void;
+  opportunityAlertStatus: OpportunityAlertStatus;
+}) {
   const configured = setup?.configured ?? {};
   const channels = {
     Telegram: Boolean(configured.TELEGRAM_BOT_TOKEN && configured.TELEGRAM_CHAT_ID),
@@ -726,6 +894,21 @@ function AlertsPanel({ setup, result, loading, onSendTest }: { setup: SetupCheck
       <div className="rounded-md border border-terminal-line bg-terminal-panel p-4">
         <h2 className="flex items-center gap-2 text-lg font-semibold text-white"><Bell className="h-5 w-5 text-terminal-cyan" /> Alert architecture</h2>
         <p className="mt-2 text-sm text-terminal-muted">Telegram is the preferred V3 channel. Alerts only send when channel env vars are configured. Triggers include high-score opportunities, risk warnings, morning brief, midday update, closing report, Polymarket movers, and stock movers.</p>
+        <label className="mt-4 flex items-center justify-between gap-4 rounded-md border border-terminal-line bg-terminal-ink/60 p-3">
+          <span>
+            <span className="block font-semibold text-white">Send Telegram alert after opportunity scan</span>
+            <span className="mt-1 block text-sm text-terminal-muted">Default off for safety. When enabled, each scan sends at most 3 Telegram messages.</span>
+          </span>
+          <input
+            type="checkbox"
+            checked={sendOpportunityTelegram}
+            onChange={(event) => onToggleOpportunityTelegram(event.target.checked)}
+            className="h-5 w-5 accent-terminal-cyan"
+          />
+        </label>
+        <div className="mt-4">
+          <AlertStatusPanel status={opportunityAlertStatus} />
+        </div>
         <div className="mt-4 grid gap-2">
           {Object.entries(channels).map(([channel, ready]) => (
             <div key={channel} className="flex items-center justify-between rounded-md border border-terminal-line bg-terminal-ink/60 p-3">
