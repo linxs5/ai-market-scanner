@@ -1,4 +1,3 @@
-import { getStore } from "@netlify/blobs";
 import type {
   AlertResponse,
   DailyReportType,
@@ -8,10 +7,13 @@ import type {
   ReportDiagnostics,
   SavedDailyReport,
   SavedReportsResponse,
+  ScheduleDiagnosticsRecord,
   UnifiedOpportunity
 } from "@/lib/shared/types";
+import { getBlobStore } from "./blob-storage";
 
 const REPORTS_KEY = "saved-daily-reports";
+const SCHEDULE_DIAGNOSTICS_KEY = "schedule-diagnostics";
 
 export const REPORT_SCHEDULES: Record<DailyReportType, SavedDailyReport["schedule"]> = {
   morning: {
@@ -44,7 +46,7 @@ const REPORT_TITLES: Record<DailyReportType, SavedDailyReport["title"]> = {
 };
 
 function store() {
-  return getStore({ name: "market-intelligence-saved-reports", consistency: "strong" });
+  return getBlobStore("market-intelligence-saved-reports");
 }
 
 function riskSentence(opportunity: UnifiedOpportunity) {
@@ -240,6 +242,39 @@ export async function clearSavedReports() {
   await store().delete(REPORTS_KEY);
 }
 
+export function newYorkTime() {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    dateStyle: "medium",
+    timeStyle: "medium"
+  }).format(new Date());
+}
+
+export async function loadScheduleDiagnostics(): Promise<ScheduleDiagnosticsRecord> {
+  try {
+    const saved = (await store().get(SCHEDULE_DIAGNOSTICS_KEY, { type: "json" })) as ScheduleDiagnosticsRecord | null;
+    return {
+      ...makeEmptyScheduleDiagnostics(),
+      ...saved,
+      currentUtcTime: new Date().toISOString(),
+      currentNewYorkTime: newYorkTime()
+    };
+  } catch {
+    return makeEmptyScheduleDiagnostics();
+  }
+}
+
+export async function saveScheduleDiagnostics(update: Partial<ScheduleDiagnosticsRecord>) {
+  const diagnostics = {
+    ...(await loadScheduleDiagnostics()),
+    ...update,
+    currentUtcTime: new Date().toISOString(),
+    currentNewYorkTime: newYorkTime()
+  };
+  await store().setJSON(SCHEDULE_DIAGNOSTICS_KEY, diagnostics);
+  return diagnostics;
+}
+
 export function telegramStatusFromAlert(alert: AlertResponse | null, error?: string | null): SavedDailyReport["telegram"] {
   return {
     attempted: true,
@@ -268,5 +303,19 @@ function makeDiagnostics(reports: SavedDailyReport[]): ReportDiagnostics {
       closing: REPORT_SCHEDULES.closing.configuredUtc
     },
     dstNote: "Netlify scheduled functions use fixed UTC cron. Adjust manually if you need exact ET across EST/EDT."
+  };
+}
+
+function makeEmptyScheduleDiagnostics(): ScheduleDiagnosticsRecord {
+  return {
+    currentUtcTime: new Date().toISOString(),
+    currentNewYorkTime: newYorkTime(),
+    configuredMorningUtcCron: REPORT_SCHEDULES.morning.configuredUtc,
+    configuredMiddayUtcCron: REPORT_SCHEDULES.midday.configuredUtc,
+    configuredClosingUtcCron: REPORT_SCHEDULES.closing.configuredUtc,
+    lastScheduledRun: null,
+    lastTelegramAttempt: null,
+    lastReportSaveAttempt: null,
+    lastError: null
   };
 }

@@ -29,9 +29,10 @@ export async function loadServerAppState(): Promise<AppStatePersistenceResponse>
   try {
     const response = await fetch("/.netlify/functions/app-state");
     if (!response.ok) return { available: false, state: null, warning: "Saved app state did not respond." };
-    const payload = (await response.json()) as AppStatePersistenceResponse;
+    const payload = (await response.json()) as AppStatePersistenceResponse & { error?: string };
     return {
       ...payload,
+      warning: payload.warning ?? payload.error,
       state: payload.state ? { ...payload.state, source: "server" } : null
     };
   } catch (error) {
@@ -53,7 +54,8 @@ export async function saveServerAppState(state: PersistedAppState): Promise<AppS
       body: JSON.stringify({ ...state, source: "server" })
     });
     if (!response.ok) return { available: false, state: null, warning: "Saved app state did not save." };
-    return (await response.json()) as AppStatePersistenceResponse;
+    const payload = (await response.json()) as AppStatePersistenceResponse & { error?: string };
+    return { ...payload, warning: payload.warning ?? payload.error };
   } catch (error) {
     return {
       available: false,
@@ -69,7 +71,8 @@ export async function clearServerAppState(): Promise<AppStatePersistenceResponse
   try {
     const response = await fetch("/.netlify/functions/app-state", { method: "DELETE" });
     if (!response.ok) return { available: false, state: null, warning: "Saved app state did not clear." };
-    return (await response.json()) as AppStatePersistenceResponse;
+    const payload = (await response.json()) as AppStatePersistenceResponse & { error?: string };
+    return { ...payload, warning: payload.warning ?? payload.error };
   } catch (error) {
     return {
       available: false,

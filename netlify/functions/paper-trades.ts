@@ -1,6 +1,6 @@
 import type { Handler } from "@netlify/functions";
-import { getStore } from "@netlify/blobs";
 import { z } from "zod";
+import { connectBlobs, getBlobStore } from "../../lib/server/blob-storage";
 import { errorResponse, jsonResponse } from "../../lib/server/http";
 
 const TRADE_STORE_KEY = "paper-trades";
@@ -30,15 +30,13 @@ const bodySchema = z.object({
 });
 
 function paperTradeStore() {
-  return getStore({
-    name: "market-intelligence-paper-trades",
-    consistency: "strong"
-  });
+  return getBlobStore("market-intelligence-paper-trades");
 }
 
 export const handler: Handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return jsonResponse({});
   if (!["GET", "POST"].includes(event.httpMethod)) return errorResponse("Method not allowed.", 405);
+  connectBlobs(event);
 
   try {
     const store = paperTradeStore();

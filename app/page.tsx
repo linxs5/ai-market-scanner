@@ -34,6 +34,7 @@ import type {
   PolymarketScanResponse,
   SavedDailyReport,
   SavedReportsResponse,
+  ScheduleDiagnosticsRecord,
   ScanResponse,
   SetupCheckResponse,
   SetupReport,
@@ -100,6 +101,19 @@ type PersistenceStatus = {
   message: string;
 };
 
+type BlobDiagnostics = {
+  blobAvailable: boolean;
+  readTestOk: boolean;
+  writeTestOk: boolean;
+  lastError: string | null;
+  environment: {
+    hasNetlify: boolean;
+    hasSiteId: boolean;
+    hasBlobsContext: boolean;
+    nodeEnv: string;
+  };
+};
+
 const tabs: Tab[] = [
   "Top Opportunities",
   "Today's Action Plan",
@@ -161,6 +175,8 @@ export default function Home() {
   const [crossMarket, setCrossMarket] = useState<CrossMarketResponse | null>(null);
   const [setup, setSetup] = useState<SetupCheckResponse | null>(null);
   const [savedReports, setSavedReports] = useState<SavedReportsResponse | null>(null);
+  const [blobDiagnostics, setBlobDiagnostics] = useState<BlobDiagnostics | null>(null);
+  const [scheduleDiagnostics, setScheduleDiagnostics] = useState<ScheduleDiagnosticsRecord | null>(null);
   const [paperTrades, setPaperTrades] = useState<PaperTrade[]>(loadPaperTrades);
   const [feed, setFeed] = useState<ResearchFeedItem[]>(loadResearchFeed);
   const [loading, setLoading] = useState<"stock" | "polymarket" | "cross" | "alert" | "opportunity" | null>(null);
@@ -185,6 +201,7 @@ export default function Home() {
   useEffect(() => {
     void checkSetup();
     void hydratePersistedAppState();
+    void runDiagnostics();
     void hydratePaperTrades();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -276,6 +293,20 @@ export default function Home() {
         message: server.available ? "No saved scan data found yet." : `Using local fallback. ${server.warning ?? "Server persistence unavailable."}`
       });
       await loadSavedReportsNow();
+    }
+  }
+
+  async function runDiagnostics() {
+    try {
+      const [blobResponse, scheduleResponse] = await Promise.all([
+        fetch("/.netlify/functions/blob-diagnostics"),
+        fetch("/.netlify/functions/schedule-diagnostics")
+      ]);
+      if (blobResponse.ok) setBlobDiagnostics((await blobResponse.json()) as BlobDiagnostics);
+      if (scheduleResponse.ok) setScheduleDiagnostics((await scheduleResponse.json()) as ScheduleDiagnosticsRecord);
+    } catch {
+      setBlobDiagnostics(null);
+      setScheduleDiagnostics(null);
     }
   }
 
@@ -402,6 +433,7 @@ export default function Home() {
       const reports = (await response.json()) as SavedReportsResponse;
       setSavedReports(reports);
       persistAppState({ savedReports: reports });
+      await runDiagnostics();
     } catch {
       setSavedReports(null);
     }
@@ -418,6 +450,33 @@ export default function Home() {
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error ?? "Report save failed.");
+      if (payload.ok === false && payload.report) {
+        const fallbackReports: SavedReportsResponse = {
+          reports: [payload.report as SavedDailyReport, ...(savedReports?.reports ?? [])].slice(0, 20),
+          diagnostics: savedReports?.diagnostics ?? {
+            lastScheduledRun: null,
+            lastTelegramAttempt: null,
+            lastTelegramError: null,
+            lastReportSavedTime: new Date().toISOString(),
+            currentUtcTime: new Date().toISOString(),
+            expectedNextRunTime: "Saved locally only; server report storage unavailable.",
+            configuredUtcTimes: { morning: "30 12 * * 1-5", midday: "30 16 * * 1-5", closing: "30 19 * * 1-5" },
+            dstNote: "Netlify scheduled functions use fixed UTC cron."
+          },
+          warning: payload.error ?? "Saved locally only."
+        };
+        setSavedReports(fallbackReports);
+        persistAppState({ savedReports: fallbackReports });
+        setPersistenceStatus((current) => ({
+          ...current,
+          state: "failed",
+          source: "local",
+          message: `Saved locally only. ${payload.error ?? "Server report storage unavailable."}`
+        }));
+        setActiveTab("Saved Reports");
+        await runDiagnostics();
+        return;
+      }
       await loadSavedReportsNow();
       setActiveTab("Saved Reports");
     } catch (caught) {
@@ -762,7 +821,15 @@ export default function Home() {
           <ActionPlansPanel engine={engine} loading={loading === "opportunity"} onRun={runOpportunityEngineNow} />
         ) : null}
         {activeTab === "Saved Reports" ? (
-          <SavedReportsPanel savedReports={savedReports} loading={loading === "opportunity"} onRefresh={loadSavedReportsNow} onSaveReport={saveManualReport} />
+          <SavedReportsPanel
+            savedReports={savedReports}
+            blobDiagnostics={blobDiagnostics}
+            scheduleDiagnostics={scheduleDiagnostics}
+            loading={loading === "opportunity"}
+            onRefresh={loadSavedReportsNow}
+            onRunDiagnostics={runDiagnostics}
+            onSaveReport={saveManualReport}
+          />
         ) : null}
         {activeTab === "Stock Scanner" ? (
           <StockScanner scan={stockScan} loading={loading === "stock"} onRun={runStockScan} onPaperTrade={addStockTrade} setup={setup} />
@@ -786,6 +853,9 @@ export default function Home() {
             onToggleOpportunityTelegram={updateOpportunityTelegramSetting}
             opportunityAlertStatus={opportunityAlertStatus}
             diagnostics={savedReports?.diagnostics ?? null}
+            blobDiagnostics={blobDiagnostics}
+            scheduleDiagnostics={scheduleDiagnostics}
+            onRunDiagnostics={runDiagnostics}
           />
         ) : null}
         {activeTab === "Paper Trades" ? (
@@ -982,13 +1052,19 @@ function DailySection({ title, items }: { title: string; items: string[] }) {
 
 function SavedReportsPanel({
   savedReports,
+  blobDiagnostics,
+  scheduleDiagnostics,
   loading,
   onRefresh,
+  onRunDiagnostics,
   onSaveReport
 }: {
   savedReports: SavedReportsResponse | null;
+  blobDiagnostics: BlobDiagnostics | null;
+  scheduleDiagnostics: ScheduleDiagnosticsRecord | null;
   loading: boolean;
   onRefresh: () => void;
+  onRunDiagnostics: () => void;
   onSaveReport: (reportType: "morning" | "midday" | "closing") => void;
 }) {
   const reports = savedReports?.reports ?? [];
@@ -1005,6 +1081,7 @@ function SavedReportsPanel({
         <div className="flex flex-wrap gap-2">
           <button onClick={() => onSaveReport("morning")} disabled={loading} className="rounded-md border border-terminal-line px-3 py-2 text-sm text-terminal-muted hover:text-white disabled:opacity-60">Save Morning</button>
           <button onClick={onRefresh} className="rounded-md border border-terminal-line px-3 py-2 text-sm text-terminal-muted hover:text-white">Refresh</button>
+          <button onClick={onRunDiagnostics} className="rounded-md border border-terminal-line px-3 py-2 text-sm text-terminal-muted hover:text-white">Run diagnostics</button>
         </div>
       </div>
       {savedReports?.warning ? <WarningList items={[savedReports.warning]} /> : null}
@@ -1022,8 +1099,44 @@ function SavedReportsPanel({
           </article>
         ))}
       </div>
+      <StorageDiagnosticsPanel blobDiagnostics={blobDiagnostics} scheduleDiagnostics={scheduleDiagnostics} savedReports={savedReports} />
       {savedReports?.diagnostics ? <DiagnosticsPanel diagnostics={savedReports.diagnostics} /> : null}
     </section>
+  );
+}
+
+function StorageDiagnosticsPanel({
+  blobDiagnostics,
+  scheduleDiagnostics,
+  savedReports
+}: {
+  blobDiagnostics: BlobDiagnostics | null;
+  scheduleDiagnostics: ScheduleDiagnosticsRecord | null;
+  savedReports: SavedReportsResponse | null;
+}) {
+  return (
+    <div className="rounded-md border border-terminal-line bg-terminal-panel p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-lg font-semibold text-white">Storage and schedule diagnostics</h2>
+        <span className={badgeClass(blobDiagnostics?.blobAvailable ? "green" : "yellow")}>
+          Blob status: {blobDiagnostics?.blobAvailable ? "available" : "local fallback"}
+        </span>
+      </div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <Info title="Last report saved" text={scheduleDiagnostics?.lastReportSaveAttempt ?? savedReports?.diagnostics.lastReportSavedTime ?? "No report save recorded."} />
+        <Info title="Last scheduled run" text={scheduleDiagnostics?.lastScheduledRun ?? savedReports?.diagnostics.lastScheduledRun ?? "No scheduled run recorded."} />
+        <Info title="Last Telegram attempt" text={scheduleDiagnostics?.lastTelegramAttempt ?? savedReports?.diagnostics.lastTelegramAttempt ?? "No Telegram attempt recorded."} />
+        <Info title="Last error" text={scheduleDiagnostics?.lastError ?? blobDiagnostics?.lastError ?? savedReports?.warning ?? "No error recorded."} />
+        <Info title="Current UTC time" text={scheduleDiagnostics?.currentUtcTime ?? savedReports?.diagnostics.currentUtcTime ?? new Date().toISOString()} />
+        <Info title="Current ET time" text={scheduleDiagnostics?.currentNewYorkTime ?? "Run diagnostics to fetch ET time."} />
+      </div>
+      <div className="mt-4 grid gap-2 text-sm text-terminal-muted sm:grid-cols-2">
+        <p>Blob read test: {String(blobDiagnostics?.readTestOk ?? false)}</p>
+        <p>Blob write test: {String(blobDiagnostics?.writeTestOk ?? false)}</p>
+        <p>Has Netlify: {String(blobDiagnostics?.environment.hasNetlify ?? false)}</p>
+        <p>Has Blob context: {String(blobDiagnostics?.environment.hasBlobsContext ?? false)}</p>
+      </div>
+    </div>
   );
 }
 
@@ -1372,7 +1485,10 @@ function AlertsPanel({
   sendOpportunityTelegram,
   onToggleOpportunityTelegram,
   opportunityAlertStatus,
-  diagnostics
+  diagnostics,
+  blobDiagnostics,
+  scheduleDiagnostics,
+  onRunDiagnostics
 }: {
   setup: SetupCheckResponse | null;
   result: AlertResponse | null;
@@ -1382,6 +1498,9 @@ function AlertsPanel({
   onToggleOpportunityTelegram: (enabled: boolean) => void;
   opportunityAlertStatus: OpportunityAlertStatus;
   diagnostics: SavedReportsResponse["diagnostics"] | null;
+  blobDiagnostics: BlobDiagnostics | null;
+  scheduleDiagnostics: ScheduleDiagnosticsRecord | null;
+  onRunDiagnostics: () => void;
 }) {
   const configured = setup?.configured ?? {};
   const channels = {
@@ -1433,6 +1552,13 @@ function AlertsPanel({
             <WarningList items={result.warnings} />
           </div>
         ) : <EmptyState text="No alert has been tested in this browser session." />}
+      </div>
+      <div className="grid gap-3">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-lg font-semibold text-white">Diagnostics</h2>
+          <button onClick={onRunDiagnostics} className="rounded-md border border-terminal-line px-3 py-2 text-sm text-terminal-muted hover:text-white">Run diagnostics</button>
+        </div>
+        <StorageDiagnosticsPanel blobDiagnostics={blobDiagnostics} scheduleDiagnostics={scheduleDiagnostics} savedReports={null} />
       </div>
       {diagnostics ? <DiagnosticsPanel diagnostics={diagnostics} /> : null}
     </section>

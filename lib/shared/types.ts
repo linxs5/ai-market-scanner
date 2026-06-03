@@ -471,3 +471,15 @@ export type AppStatePersistenceResponse = {
   state: PersistedAppState | null;
   warning?: string;
 };
+
+export type ScheduleDiagnosticsRecord = {
+  currentUtcTime: string;
+  currentNewYorkTime: string;
+  configuredMorningUtcCron: string;
+  configuredMiddayUtcCron: string;
+  configuredClosingUtcCron: string;
+  lastScheduledRun: string | null;
+  lastTelegramAttempt: string | null;
+  lastReportSaveAttempt: string | null;
+  lastError: string | null;
+};

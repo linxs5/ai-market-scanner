@@ -1,17 +1,23 @@
 import type { DailyReportType, OpportunityEngineResponse } from "@/lib/shared/types";
 import { sendAlert } from "./alerts";
-import { buildDailyReport, formatDailyTelegram, saveDailyReport, telegramStatusFromAlert } from "./daily-reports";
+import { buildDailyReport, formatDailyTelegram, saveDailyReport, saveScheduleDiagnostics, telegramStatusFromAlert } from "./daily-reports";
 import { env } from "./env";
 import { runOpportunityEngine } from "./opportunity-engine";
 
 export async function runScheduledDailyReport(reportType: DailyReportType) {
   const errors: string[] = [];
+  const runStartedAt = new Date().toISOString();
+  console.log(`[scheduled:${reportType}] starting opportunity engine`);
+  await saveScheduleDiagnostics({ lastScheduledRun: runStartedAt, lastError: null }).catch(() => null);
   let engine: OpportunityEngineResponse;
   try {
     engine = await runOpportunityEngine();
+    console.log(`[scheduled:${reportType}] opportunity engine completed`);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Opportunity engine failed before scheduled report could be built.";
     errors.push(message);
+    console.error(`[scheduled:${reportType}] ${message}`);
+    await saveScheduleDiagnostics({ lastScheduledRun: runStartedAt, lastError: message }).catch(() => null);
     engine = {
       generatedAt: new Date().toISOString(),
       disclaimer: "Research only. Scheduled report generated from error fallback.",
@@ -43,6 +49,8 @@ export async function runScheduledDailyReport(reportType: DailyReportType) {
 
   try {
     if (env.telegramBotToken && env.telegramChatId) {
+      console.log(`[scheduled:${reportType}] attempting Telegram`);
+      await saveScheduleDiagnostics({ lastTelegramAttempt: new Date().toISOString() }).catch(() => null);
       alert = await sendAlert({
         title: report.title,
         message: formatDailyTelegram(report),
@@ -54,7 +62,9 @@ export async function runScheduledDailyReport(reportType: DailyReportType) {
         ...report,
         telegram: telegramStatusFromAlert(alert)
       };
+      console.log(`[scheduled:${reportType}] Telegram sent=${alert.sent}`);
     } else {
+      console.log(`[scheduled:${reportType}] Telegram skipped: env vars missing`);
       report = {
         ...report,
         telegram: {
@@ -70,6 +80,8 @@ export async function runScheduledDailyReport(reportType: DailyReportType) {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Telegram delivery failed.";
     errors.push(message);
+    console.error(`[scheduled:${reportType}] ${message}`);
+    await saveScheduleDiagnostics({ lastTelegramAttempt: new Date().toISOString(), lastError: message }).catch(() => null);
     report = {
       ...report,
       telegram: telegramStatusFromAlert(alert, message)
@@ -77,14 +89,18 @@ export async function runScheduledDailyReport(reportType: DailyReportType) {
   }
 
   try {
+    console.log(`[scheduled:${reportType}] saving report`);
+    await saveScheduleDiagnostics({ lastReportSaveAttempt: new Date().toISOString() }).catch(() => null);
     report = await saveDailyReport({
       ...report,
       errors: [...report.errors, ...errors]
     });
+    console.log(`[scheduled:${reportType}] report saved ${report.id}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Scheduled report persistence failed.";
     errors.push(message);
     console.error(message);
+    await saveScheduleDiagnostics({ lastReportSaveAttempt: new Date().toISOString(), lastError: message }).catch(() => null);
   }
 
   console.log(
