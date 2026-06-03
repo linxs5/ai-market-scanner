@@ -266,7 +266,7 @@ export default function Home() {
 
   function selectTelegramAlertOpportunities(opportunities: UnifiedOpportunity[]) {
     const selected = new Map<string, UnifiedOpportunity>();
-    const sorted = [...opportunities].sort((a, b) => b.score - a.score);
+    const sorted = [...opportunities].sort((a, b) => b.attentionPriority - a.attentionPriority || b.score - a.score);
     const best = sorted[0];
     if (best) selected.set(best.id, best);
 
@@ -579,8 +579,8 @@ function TopOpportunitiesPanel({
       <div className="grid gap-4 lg:grid-cols-4">
         <Metric icon={<Sparkles />} label="Top opportunities" value={String(top.length)} />
         <Metric icon={<Gauge />} label="Best score" value={String(top[0]?.score ?? 0)} />
+        <Metric icon={<Target />} label="Attention priority" value={String(top[0]?.attentionPriority ?? 0)} />
         <Metric icon={<Brain />} label="Data confidence" value={top[0]?.dataConfidence ?? "Run engine"} />
-        <Metric icon={<ShieldAlert />} label="Research mode" value="Manual only" />
       </div>
       <ScannerHeader title="Opportunity intelligence engine" subtitle="Unifies stock movers, Polymarket movers, catalysts, macro risk, reports, and cross-market hypotheses." onRun={onRun} loading={loading} />
       <AlertStatusPanel status={alertStatus} />
@@ -593,6 +593,7 @@ function TopOpportunitiesPanel({
             <CardTop title={opportunity.title} score={opportunity.score} risk={opportunity.riskLevel} confidence={opportunity.confidence} />
             <div className="mt-3 flex flex-wrap gap-2">
               <span className={badgeClass(opportunity.marketType === "stock" ? "blue" : "green")}>{opportunity.marketType}</span>
+              <span className={badgeClass(scoreTone(opportunity.attentionPriority))}>attention {opportunity.attentionPriority}</span>
               <span className={badgeClass(opportunity.dataConfidence === "high" ? "green" : opportunity.dataConfidence === "medium" ? "yellow" : "red")}>data {opportunity.dataConfidence}</span>
               <span className={badgeClass("yellow")}>Why skip this?</span>
             </div>
@@ -770,7 +771,9 @@ function PolymarketCard({ market, onPaperTrade }: { market: PolymarketOpportunit
   return (
     <article className="rounded-md border border-terminal-line bg-terminal-panel p-4 shadow-glow">
       <CardTop title={market.question} score={market.score} risk={market.riskLevel} confidence={market.confidence} />
-      <p className="mt-2 text-sm text-terminal-muted">{market.currentConsensus} · Vol {formatMoney(market.volume)} · 24h {formatMoney(market.volume24hr)} · Liq {formatMoney(market.liquidity)}</p>
+      <p className="mt-2 text-sm text-terminal-muted">
+        {market.currentConsensus} · Attention {market.attentionPriority} · Category weight {market.categoryWeight} · Vol {formatMoney(market.volume)} · 24h {formatMoney(market.volume24hr)} · Liq {formatMoney(market.liquidity)}
+      </p>
       <BreakdownGrid items={market.scoreBreakdown} />
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <Info title="Resolution criteria" text={market.resolutionCriteria} />

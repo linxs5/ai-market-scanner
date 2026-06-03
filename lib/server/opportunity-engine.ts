@@ -28,6 +28,7 @@ function stockToOpportunity(setup: SetupReport): UnifiedOpportunity {
     symbol: setup.ticker,
     current: `$${setup.quote.price.toFixed(2)} (${setup.quote.changePercent.toFixed(2)}%)`,
     score: setup.score,
+    attentionPriority: setup.score,
     scoreBreakdown: setup.breakdown,
     catalyst,
     bullCase: setup.ai.bullCase,
@@ -53,6 +54,7 @@ function polymarketToOpportunity(market: PolymarketOpportunity): UnifiedOpportun
     symbol: market.slug,
     current: `${market.currentConsensus}${market.priceHistoryChange === null ? "" : ` · 1d history ${Math.round(market.priceHistoryChange * 100)} pts`}`,
     score: market.score,
+    attentionPriority: market.attentionPriority,
     scoreBreakdown: market.scoreBreakdown,
     catalyst,
     bullCase: market.yesCase,
@@ -119,7 +121,9 @@ export async function runOpportunityEngine(): Promise<OpportunityEngineResponse>
   const crossMarketInsights = buildCrossMarketInsights(stockScan, polymarketScan);
   const stockOpportunities = stockScan?.setups.map(stockToOpportunity) ?? [];
   const polymarketOpportunities = polymarketScan.opportunities.map(polymarketToOpportunity);
-  const opportunities = [...stockOpportunities, ...polymarketOpportunities].sort((a, b) => b.score - a.score);
+  const opportunities = [...stockOpportunities, ...polymarketOpportunities].sort(
+    (a, b) => b.attentionPriority - a.attentionPriority || b.score - a.score
+  );
   const topCrossMarketInsight = crossMarketInsights[0] ?? null;
 
   return {

@@ -157,6 +157,32 @@ function detectCatalystStrength(text: string, volume24hr: number, oneDayMove: nu
   return clamp(keywordHits * 12 + Math.min(volume24hr / 10_000, 35) + Math.min(Math.abs(oneDayMove ?? 0) * 250, 30));
 }
 
+function includesAny(text: string, words: string[]) {
+  return words.some((word) => text.includes(word));
+}
+
+function classifyResearchCategory(text: string, tags: string[]) {
+  const haystack = `${text} ${tags.join(" ")}`.toLowerCase();
+  if (includesAny(haystack, ["election", "president", "senate", "congress", "politics", "mayor", "governor"])) return "politics";
+  if (includesAny(haystack, ["fed", "fomc", "inflation", "cpi", "ppi", "jobs", "payroll", "gdp", "rate", "economy"])) return "macro/economics";
+  if (includesAny(haystack, ["bitcoin", "crypto", "ethereum", "solana", "xrp", "coinbase", "kraken"])) return "crypto";
+  if (includesAny(haystack, ["stock", "stocks", "ipo", "earnings", "nasdaq", "sp500", "s&p", "treasury", "finance", "market"])) return "financial markets";
+  if (includesAny(haystack, ["war", "ceasefire", "tariff", "court", "trial", "approval", "regulation", "geopolitical"])) return "major current news";
+  if (includesAny(haystack, ["nhl", "nba", "nfl", "mlb", "soccer", "uefa", "stanley cup", "world cup", "super bowl", "sports"])) return "sports";
+  return "general";
+}
+
+function categoryWeight(category: string, isFreshCatalyst: boolean, clearEdge: boolean, nearResolution: boolean, highLiquidity: boolean, longDated: boolean) {
+  if (["politics", "macro/economics", "crypto", "financial markets"].includes(category)) return 14;
+  if (category === "major current news") return 10;
+  if (category === "sports") {
+    if (highLiquidity && nearResolution && isFreshCatalyst && clearEdge) return -2;
+    if (longDated) return -28;
+    return -18;
+  }
+  return -4;
+}
+
 function resolutionClarity(description: string, resolutionSource: string) {
   const text = `${description} ${resolutionSource}`.toLowerCase();
   let score = 45;
@@ -197,6 +223,7 @@ async function scoreMarket(event: GammaEvent, market: GammaMarket, smartMoneyAva
   const description = market.description || event.description || "";
   const resolutionSource = market.resolutionSource || event.resolutionSource || "Not listed separately; inspect market rules.";
   const text = `${event.title ?? ""} ${market.question ?? ""} ${description}`;
+  const tagLabels = (event.tags ?? []).map((tag) => `${tag.label ?? ""} ${tag.slug ?? ""}`);
   const competitiveOdds = yesPrice !== null ? 100 - Math.abs(yesPrice - 0.5) * 200 : 35;
 
   const liquidityVolume = clamp(Math.log10(volume + liquidity + 1) * 16);
@@ -211,6 +238,13 @@ async function scoreMarket(event: GammaEvent, market: GammaMarket, smartMoneyAva
   const timeAttractiveness =
     timeRemainingDays === null ? 35 : timeRemainingDays < 1 ? 35 : timeRemainingDays <= 45 ? 85 : timeRemainingDays <= 180 ? 65 : 42;
   const crowdSignal = clamp(toNumber(event.competitive) * 75 + (smartMoneyAvailable ? 15 : 0) + Math.min(openInterest / 100_000, 10));
+  const researchCategory = classifyResearchCategory(text, tagLabels);
+  const isFreshCatalyst = catalystStrength >= 55 || Math.abs(oneDayPriceChange ?? 0) >= 0.04 || Math.abs(priceHistoryChange ?? 0) >= 0.04;
+  const nearResolution = timeRemainingDays !== null && timeRemainingDays <= 14;
+  const longDated = timeRemainingDays === null || timeRemainingDays > 60;
+  const highLiquidity = liquidity >= 25_000 && volume24hr >= 2_500;
+  const clearEdge = clarity >= 70 && (spread === null || spread <= 0.03);
+  const categoryBoost = categoryWeight(researchCategory, isFreshCatalyst, clearEdge, nearResolution, highLiquidity, longDated);
 
   const breakdown: PolymarketScoreBreakdown = {
     liquidityVolume: round(liquidityVolume),
@@ -221,13 +255,23 @@ async function scoreMarket(event: GammaEvent, market: GammaMarket, smartMoneyAva
     crowdSignal: round(crowdSignal)
   };
 
-  const score = round(
+  const baseScore = round(
     breakdown.liquidityVolume * 0.25 +
       breakdown.oddsMomentum * 0.2 +
       breakdown.catalystStrength * 0.2 +
       breakdown.resolutionClarity * 0.15 +
       breakdown.timeAttractiveness * 0.1 +
       breakdown.crowdSignal * 0.1
+  );
+  const score = round(clamp(baseScore + categoryBoost * 0.45));
+  const attentionPriority = round(
+    clamp(
+      score +
+        categoryBoost +
+        (isFreshCatalyst ? 8 : -5) +
+        (nearResolution ? 6 : 0) +
+        (researchCategory === "sports" && !(highLiquidity && nearResolution && isFreshCatalyst && clearEdge) ? -18 : 0)
+    )
   );
 
   const ambiguousWording = /consensus|credible reporting|substantially|significant|unclear|may|could/i.test(description);
@@ -260,12 +304,15 @@ async function scoreMarket(event: GammaEvent, market: GammaMarket, smartMoneyAva
   if (resolutionSourceRisk) warnings.push("Resolution source is not explicitly listed.");
   if (ambiguousWording) warnings.push("Wording may depend on judgment or credible-reporting consensus.");
   if (market.umaResolutionStatus) warnings.push(`UMA status: ${market.umaResolutionStatus}.`);
+  if (researchCategory === "sports" && !(highLiquidity && nearResolution && isFreshCatalyst && clearEdge)) {
+    warnings.push("Sports future deprioritized: needs high liquidity, near resolution, fresh catalyst, and clear edge to rank highly.");
+  }
 
   const missingDataPoints = [yesPrice, noPrice, spread, oneDayPriceChange, priceHistoryChange].filter((value) => value === null).length;
   const confidence: Confidence = score >= 75 && riskCount <= 2 && missingDataPoints <= 1 ? "high" : score >= 58 && riskCount <= 5 ? "medium" : "low";
   const dataConfidence: Confidence = missingDataPoints <= 1 ? "high" : missingDataPoints <= 3 ? "medium" : "low";
   const riskLevel = riskCount >= 5 || thinLiquidity || wideSpread ? "high" : riskCount >= 3 ? "medium" : "low";
-  const category = event.tags?.[0]?.label || "Prediction market";
+  const category = researchCategory === "general" ? event.tags?.[0]?.label || "Prediction market" : researchCategory;
   const currentConsensus =
     yesPrice === null ? "Current odds unavailable." : `YES ${Math.round(yesPrice * 100)}% / NO ${Math.round((noPrice ?? 1 - yesPrice) * 100)}%`;
 
@@ -299,6 +346,8 @@ async function scoreMarket(event: GammaEvent, market: GammaMarket, smartMoneyAva
     resolutionCriteria: description.slice(0, 700) || "No detailed criteria returned by the public API.",
     score,
     scoreBreakdown: breakdown,
+    categoryWeight: categoryBoost,
+    attentionPriority,
     confidence,
     dataConfidence,
     riskLevel,
@@ -409,13 +458,13 @@ export async function runPolymarketScan(): Promise<PolymarketScanResponse> {
   );
 
   const opportunities = scored
-    .filter((market) => market.score >= 45 && market.liquidity >= 250 && market.volume24hr >= 25)
-    .sort((a, b) => b.score - a.score)
+    .filter((market) => market.score >= 45 && market.attentionPriority >= 40 && market.liquidity >= 250 && market.volume24hr >= 25)
+    .sort((a, b) => b.attentionPriority - a.attentionPriority || b.score - a.score)
     .slice(0, 12);
 
   const skipped = allActive
     .filter((market) => !opportunities.some((opportunity) => opportunity.id === market.id))
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => b.attentionPriority - a.attentionPriority || b.score - a.score)
     .slice(0, 20);
 
   return {

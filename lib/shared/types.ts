@@ -162,6 +162,8 @@ export type PolymarketOpportunity = {
   resolutionCriteria: string;
   score: number;
   scoreBreakdown: PolymarketScoreBreakdown;
+  categoryWeight: number;
+  attentionPriority: number;
   confidence: Confidence;
   dataConfidence: Confidence;
   riskLevel: RiskLevel;
@@ -192,6 +194,7 @@ export type UnifiedOpportunity = {
   symbol: string;
   current: string;
   score: number;
+  attentionPriority: number;
   scoreBreakdown: Record<string, number>;
   catalyst: CatalystProfile;
   bullCase: string;
