@@ -1,69 +1,93 @@
-# Market Intelligence AI
+# Market Intelligence AI V2
 
-Market Intelligence AI is a research-only dashboard for a beginner retail trader with a small account. It scans a starter watchlist, fetches real market quotes and recent company news from server-side providers, scores possible research setups, asks OpenAI for beginner-friendly JSON explanations, and lets you track paper trades in localStorage.
+Market Intelligence AI is a research-only multi-market dashboard for stocks, ETFs, and Polymarket prediction markets. It scans public data, scores ideas, explains risk, tracks paper decisions, and builds a local learning loop.
 
-This is not an auto-trading bot, not financial advice, not a Robinhood integration, and not a profit-promise tool. It never places trades.
+It is not an auto-trading bot, not financial advice, not gambling advice, and not a guaranteed-profit system.
 
-## What It Does
+## What V2 Does
 
-- Scans a starter watchlist: SPY, QQQ, AAPL, MSFT, NVDA, AMD, TSLA, META, AMZN, GOOG, PLTR, SOFI, HOOD, RIVN, SMCI, MSTR, IONQ.
-- Fetches real quotes from Finnhub and optionally uses Polygon when `POLYGON_API_KEY` is configured.
-- Fetches recent company news from Finnhub.
-- Detects a simple market regime from SPY/QQQ movement, intraday range, and news flow.
-- Scores setups from 0 to 100 with a non-random multi-factor model.
-- Sends only fetched and scored data to OpenAI from Netlify functions.
-- Returns structured setup reports with bull case, bear case, catalyst, entry zone idea, stop idea, target idea, risk/reward, invalidation, skip reason, confidence, and a manual checklist.
-- Tracks paper trades, skipped setups, and outcomes in browser localStorage.
+- Scans stocks and ETFs with Finnhub quotes/news and optional Polygon snapshots.
+- Scans active Polymarket events and markets with public Gamma API data.
+- Uses Polymarket Data API leaderboard data for Smart Money Watch context.
+- Scores stock setups and Polymarket opportunities with non-random formulas.
+- Flags ambiguous wording, thin liquidity, wide spread, resolution-source risk, binary news shock, crowded trade risk, manipulation/whale risk, and time/opportunity cost.
+- Builds research packets with YES/NO cases, consensus odds, resolution criteria, skip reasons, and invalidation.
+- Compares stock narratives with Polymarket themes as clearly marked hypotheses.
+- Tracks paper trades, skipped ideas, local outcomes, score buckets, market type, catalyst type, and failure reasons.
+- Stores a local research feed in browser localStorage.
+- Provides optional alert architecture for Telegram, email, and SMS.
 
 ## What It Does Not Do
 
 - Does not auto-trade.
 - Does not connect to Robinhood.
-- Does not place orders.
-- Does not use browser automation to click trades.
+- Does not connect to a Polymarket wallet.
+- Does not place Polymarket orders.
+- Does not handle private keys.
 - Does not expose API keys in frontend code.
-- Does not use fake random stock prices.
-- Does not promise profit or easy gains.
-- Does not support options in v1.
-- Does not support penny stocks under $2 in v1.
+- Does not promise profit.
+- Does not provide hype language about guaranteed or effortless gains.
+- Does not support real-money execution workflows.
 
-## Scoring Formula
+## Public Polymarket APIs
 
-The scoring engine is in `lib/server/scoring.ts`. It produces a 0-100 score from:
+V2 uses public endpoints documented by Polymarket:
 
-- Momentum, 30%: absolute percent change versus previous close, capped to avoid extreme runaway scores.
-- Relative volatility/volume proxy, 25%: intraday high-low range as a percentage of current price. Finnhub free quotes do not include volume, so range is used as the v1 proxy.
-- News catalyst, 25%: recent headline count plus extra credit for catalyst terms such as earnings, guidance, upgrade, deal, contract, launch, approval, partnership, revenue, profit, acquisition, SEC, or investigation.
-- Risk/reward quality, 20%: favors tradable symbols above $2 with enough movement but penalizes extreme extension.
+- Gamma API: `https://gamma-api.polymarket.com`
+- Data API: `https://data-api.polymarket.com`
+- CLOB public market data: `https://clob.polymarket.com`
 
-The score is never random. Weak setups, stocks below $2, and setups without recent news are filtered or warned.
+No Polymarket API key, wallet, or authentication is required for the V2 scanner. Trading endpoints are intentionally not used.
+
+## Scoring
+
+### Stock Score
+
+The stock score remains 0-100:
+
+- Momentum: 30%
+- Relative volatility/range proxy: 25%
+- News catalyst: 25%
+- Risk/reward quality: 20%
+
+### Polymarket Score
+
+The Polymarket score is 0-100:
+
+- Liquidity / volume: 25%
+- Odds movement / momentum: 20%
+- Catalyst strength: 20%
+- Resolution clarity: 15%
+- Time-to-resolution attractiveness: 10%
+- Crowd/top-trader signal: 10%
+
+If data is missing or the market has risk flags, confidence is lowered.
 
 ## Environment Variables
 
-Required:
+Required for stock scanner:
 
 ```bash
-OPENAI_API_KEY=your_openai_key
-FINNHUB_API_KEY=your_finnhub_key
+OPENAI_API_KEY=
+FINNHUB_API_KEY=
 ```
 
 Optional:
 
 ```bash
-POLYGON_API_KEY=your_polygon_key
+POLYGON_API_KEY=
 TWILIO_ACCOUNT_SID=
 TWILIO_AUTH_TOKEN=
 TWILIO_FROM_NUMBER=
 USER_PHONE_NUMBER=
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+RESEND_API_KEY=
+ALERT_EMAIL_TO=
+ALERT_EMAIL_FROM=
 ```
 
-Twilio variables are reserved for future alerting and are not used in v1.
-
-## Get API Keys
-
-- Finnhub: create an account at [finnhub.io](https://finnhub.io), then copy your API token from the dashboard.
-- OpenAI: create an API key in the [OpenAI platform](https://platform.openai.com/api-keys).
-- Polygon is optional: create a key at [polygon.io](https://polygon.io) if you want the app to prefer Polygon snapshots when available.
+Polymarket public scanning needs no key.
 
 ## Install
 
@@ -71,55 +95,91 @@ Twilio variables are reserved for future alerting and are not used in v1.
 npm install
 ```
 
-Create `.env.local` for local development:
-
-```bash
-OPENAI_API_KEY=...
-FINNHUB_API_KEY=...
-POLYGON_API_KEY=...
-```
-
 ## Run Locally
 
-For the full Netlify function experience, install and use the Netlify CLI:
+Use Netlify Dev for serverless functions:
 
 ```bash
-npm install -g netlify-cli
 netlify dev
 ```
 
-Then open the local URL shown by Netlify.
+Then open the local URL Netlify prints.
 
-For frontend-only development:
-
-```bash
-npm run dev
-```
-
-The scanner functions require Netlify functions, so `netlify dev` is recommended.
-
-## Test The Scan Function
-
-With `netlify dev` running:
+## Test Stocks
 
 ```bash
 curl -s http://localhost:8888/.netlify/functions/check-setup
 curl -s -X POST http://localhost:8888/.netlify/functions/run-market-scan
 ```
 
-The setup check reports whether env vars are configured without exposing secret values.
+Stock scanning requires `OPENAI_API_KEY` and `FINNHUB_API_KEY`.
 
-## Deploy To Netlify
+## Test Polymarket
 
-1. Push the repository to GitHub.
-2. Create a Netlify site from the repo.
-3. Use the build command `npm run build`.
-4. Use `.next` as the publish directory. The included `@netlify/plugin-nextjs` handles Next.js routing.
-5. Add required environment variables in Netlify site settings.
-6. Deploy.
+```bash
+curl -s -X POST http://localhost:8888/.netlify/functions/run-polymarket-scan
+```
 
-## Risk Disclaimers
+This uses public Polymarket data and should work without keys if the public APIs are reachable.
 
-This project is research software only. It is not financial advice. It cannot guarantee profits. All setup language is a paper-trade idea or research setup, not an instruction to buy or sell. A beginner with a small account should keep paper risk between $2 and $5 per idea, avoid market orders, avoid options in v1, avoid penny stocks under $2, and paper trade for at least 30 days before considering real money.
+## Test Cross-Market Scan
 
-Manual review is required. Skip any setup with low confidence, no clear catalyst, wide spread/liquidity concerns, unclear invalidation, or market conditions you do not understand.
+```bash
+curl -s -X POST http://localhost:8888/.netlify/functions/run-cross-market-scan
+```
+
+If stock keys are missing, the function still returns Polymarket data and marks the stock scan as skipped.
+
+## Test Alerts
+
+```bash
+curl -s -X POST http://localhost:8888/.netlify/functions/send-alert \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Test alert","message":"Research only. Manual review required.","severity":"medium"}'
+```
+
+Alerts only send through configured channels:
+
+- Telegram requires `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
+- Email requires `RESEND_API_KEY`, `ALERT_EMAIL_TO`, and `ALERT_EMAIL_FROM`.
+- SMS requires Twilio account SID, auth token, from number, and user phone number.
+
+## Telegram Setup
+
+1. Create a bot with BotFather.
+2. Set `TELEGRAM_BOT_TOKEN`.
+3. Send a message to the bot from the target chat.
+4. Retrieve the chat id and set `TELEGRAM_CHAT_ID`.
+
+## Twilio Setup
+
+1. Create a Twilio account.
+2. Add `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN`.
+3. Add `TWILIO_FROM_NUMBER`.
+4. Add `USER_PHONE_NUMBER`.
+
+## Netlify Scheduled Functions
+
+V2 includes:
+
+- `netlify/functions/scheduled-stock-scan.ts`
+- `netlify/functions/scheduled-polymarket-scan.ts`
+
+Both use this UTC cron:
+
+```ts
+schedule: "30 12,16,19 * * 1-5"
+```
+
+That approximates 8:30 AM, 12:30 PM, and 3:30 PM ET during Eastern Daylight Time. Adjust for EST/DST in Netlify if exact wall-clock timing matters.
+
+## Risk Rules
+
+- Research only, not financial advice.
+- Prediction-market research is not gambling advice.
+- Every idea needs a skip reason and invalidation.
+- Do not copy top traders blindly.
+- Skip unclear resolution criteria.
+- Skip thin liquidity or wide spread.
+- Skip low-confidence AI or low-confidence market data.
+- Paper trade before risking real money.
