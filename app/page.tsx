@@ -51,6 +51,7 @@ import {
 
 type Tab =
   | "Top Opportunities"
+  | "Action Plans"
   | "Stock Scanner"
   | "Polymarket Scanner"
   | "Cross-Market Opportunities"
@@ -77,6 +78,7 @@ type OpportunityAlertStatus = {
 
 const tabs: Tab[] = [
   "Top Opportunities",
+  "Action Plans",
   "Stock Scanner",
   "Polymarket Scanner",
   "Cross-Market Opportunities",
@@ -287,16 +289,15 @@ export default function Home() {
 
   function buildOpportunityAlertMessage(opportunity: UnifiedOpportunity) {
     return [
-      `Market: ${opportunity.symbol}`,
+      `What it is: ${opportunity.actionPlan.telegramSummary.whatItIs}`,
+      `Why it matters: ${opportunity.actionPlan.telegramSummary.whyItMatters}`,
+      `Action label: ${opportunity.actionPlan.decisionLabel}`,
+      `Max paper risk: ${opportunity.actionPlan.maxPaperRisk}`,
+      `What to check before touching it: ${opportunity.actionPlan.telegramSummary.whatToCheck.join(" | ")}`,
+      `Why to skip: ${opportunity.actionPlan.telegramSummary.whyToSkip}`,
       `Score: ${opportunity.score}`,
       `Risk: ${opportunity.riskLevel}`,
       `Confidence: ${opportunity.confidence}`,
-      `Catalyst: ${opportunity.catalyst.type} - ${opportunity.catalyst.whyItMatters}`,
-      `Bull/YES case: ${opportunity.bullCase}`,
-      `Bear/NO case: ${opportunity.bearCase}`,
-      `Trap risk: ${opportunity.trap}`,
-      `Invalidation: ${opportunity.invalidation}`,
-      `Suggested paper action only: ${opportunity.suggestedPaperAction}`,
       "Research only. Manual approval only. Never auto-trade."
     ].join("\n\n");
   }
@@ -497,6 +498,9 @@ export default function Home() {
             alertStatus={opportunityAlertStatus}
           />
         ) : null}
+        {activeTab === "Action Plans" ? (
+          <ActionPlansPanel engine={engine} loading={loading === "opportunity"} onRun={runOpportunityEngineNow} />
+        ) : null}
         {activeTab === "Stock Scanner" ? (
           <StockScanner scan={stockScan} loading={loading === "stock"} onRun={runStockScan} onPaperTrade={addStockTrade} setup={setup} />
         ) : null}
@@ -594,6 +598,8 @@ function TopOpportunitiesPanel({
             <div className="mt-3 flex flex-wrap gap-2">
               <span className={badgeClass(opportunity.marketType === "stock" ? "blue" : "green")}>{opportunity.marketType}</span>
               <span className={badgeClass(scoreTone(opportunity.attentionPriority))}>attention {opportunity.attentionPriority}</span>
+              <span className={badgeClass(opportunity.actionPlan.badge === "Beginner Safe" || opportunity.actionPlan.badge === "Paper Candidate" ? "green" : opportunity.actionPlan.badge === "Too Risky" ? "red" : "yellow")}>{opportunity.actionPlan.badge}</span>
+              <span className={badgeClass(opportunity.actionPlan.decisionLabel.includes("Skip") || opportunity.actionPlan.decisionLabel.includes("avoid") ? "red" : opportunity.actionPlan.decisionLabel.includes("Paper") ? "green" : "yellow")}>{opportunity.actionPlan.decisionLabel}</span>
               <span className={badgeClass(opportunity.dataConfidence === "high" ? "green" : opportunity.dataConfidence === "medium" ? "yellow" : "red")}>data {opportunity.dataConfidence}</span>
               <span className={badgeClass("yellow")}>Why skip this?</span>
             </div>
@@ -606,7 +612,10 @@ function TopOpportunitiesPanel({
               <Info title="Why it might be a trap" text={opportunity.trap} />
               <Info title="Invalidation" text={opportunity.invalidation} />
               <Info title="Suggested paper action" text={opportunity.suggestedPaperAction} />
+              <Info title="Beginner summary" text={opportunity.actionPlan.plainEnglish.whatThisMeans} />
+              <Info title="Beginner risk translation" text={opportunity.actionPlan.riskTranslation} />
             </div>
+            <List title="Beginner manual checklist" items={opportunity.actionPlan.manualChecklist.slice(0, 8)} />
             <List title="Monitor next" items={opportunity.monitorNext} />
             <WarningList items={[opportunity.skipReason]} />
           </article>
@@ -615,6 +624,71 @@ function TopOpportunitiesPanel({
       {engine ? <MacroRiskPanel items={engine.macroRiskToday} /> : null}
       {engine ? <EarningsWatchPanel items={engine.earningsWatch.slice(0, 8)} /> : null}
     </section>
+  );
+}
+
+function ActionPlansPanel({ engine, loading, onRun }: { engine: OpportunityEngineResponse | null; loading: boolean; onRun: () => void }) {
+  const opportunities = engine?.opportunities ?? [];
+  const bestStock = opportunities.find((item) => item.marketType === "stock");
+  const bestPolymarket = opportunities.find((item) => item.marketType === "polymarket");
+  const safestWatch = opportunities.find((item) => item.riskLevel === "low" && item.actionPlan.decisionLabel.includes("Watch")) ?? opportunities.find((item) => item.riskLevel === "low");
+  const highestRisk = [...opportunities].sort((a, b) => {
+    const riskRank = { high: 3, medium: 2, low: 1 };
+    return riskRank[b.riskLevel] - riskRank[a.riskLevel] || b.attentionPriority - a.attentionPriority;
+  })[0];
+  const doNotTrade = opportunities
+    .filter((item) => item.actionPlan.badge === "Too Risky" || item.actionPlan.decisionLabel.includes("Skip") || item.actionPlan.decisionLabel.includes("avoid"))
+    .slice(0, 3);
+  const gamePlan =
+    bestStock || bestPolymarket
+      ? "Pick one idea, read the simple checklist, paper-track only if you understand the catalyst and skip rules."
+      : "Run the Opportunity Engine first, then choose watch-only until a clear catalyst appears.";
+
+  return (
+    <section className="grid gap-4">
+      <ScannerHeader title="Beginner Action Plans" subtitle="Plain-English checklists for interpreting opportunities manually. Research and paper-trade guidance only." onRun={onRun} loading={loading} />
+      {loading ? <LoadingState text="Building beginner action plans..." /> : null}
+      {!loading && !engine ? <EmptyState text="Run the Opportunity Engine to create beginner action plans." /> : null}
+      {engine ? (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Info title="Today's one-sentence game plan" text={gamePlan} />
+          <List title="What I should not trade today" items={doNotTrade.length ? doNotTrade.map((item) => `${item.symbol}: ${item.actionPlan.whenToSkipCompletely}`) : ["Anything with unclear rules, low confidence, or a catalyst you cannot explain."]} />
+          {bestStock ? <BeginnerActionCard title="Best stock action plan" opportunity={bestStock} /> : <EmptyState text="No stock action plan yet. Stock keys may be missing." />}
+          {bestPolymarket ? <BeginnerActionCard title="Best Polymarket action plan" opportunity={bestPolymarket} /> : <EmptyState text="No Polymarket action plan yet." />}
+          {safestWatch ? <BeginnerActionCard title="Safest watchlist idea" opportunity={safestWatch} /> : null}
+          {highestRisk ? <BeginnerActionCard title="Highest risk avoid idea" opportunity={highestRisk} /> : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function BeginnerActionCard({ title, opportunity }: { title: string; opportunity: UnifiedOpportunity }) {
+  const plan = opportunity.actionPlan;
+  return (
+    <article className="rounded-md border border-terminal-line bg-terminal-panel p-4 shadow-glow">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-white">{title}</h2>
+          <p className="mt-1 text-sm text-terminal-muted">{opportunity.title}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <span className={badgeClass(plan.badge === "Beginner Safe" || plan.badge === "Paper Candidate" ? "green" : plan.badge === "Too Risky" ? "red" : "yellow")}>{plan.badge}</span>
+          <span className={badgeClass(plan.decisionLabel.includes("Skip") || plan.decisionLabel.includes("avoid") ? "red" : plan.decisionLabel.includes("Paper") ? "green" : "yellow")}>{plan.decisionLabel}</span>
+        </div>
+      </div>
+      <div className="mt-4 grid gap-4 lg:grid-cols-3">
+        <Info title="What this means" text={plan.plainEnglish.whatThisMeans} />
+        <Info title="Why it matters today" text={plan.plainEnglish.whyItMattersToday} />
+        <Info title="Why this could still fail" text={plan.plainEnglish.whyThisCouldStillFail} />
+      </div>
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <List title={opportunity.marketType === "stock" ? "Robinhood manual checklist" : "Polymarket manual checklist"} items={plan.manualChecklist} />
+        <List title="Do not touch if" items={plan.doNotTouchIf} />
+        <Info title="Beginner risk translation" text={plan.riskTranslation} />
+        <Info title="When to exit" text={plan.whenToExit} />
+      </div>
+    </article>
   );
 }
 

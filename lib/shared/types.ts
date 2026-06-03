@@ -9,6 +9,9 @@ export type RegimeLabel =
 
 export type Confidence = "low" | "medium" | "high";
 export type MarketType = "stock" | "polymarket";
+export type ActionBadge = "Beginner Safe" | "Needs Research" | "Too Risky" | "Watch Only" | "Paper Candidate";
+export type StockDecisionLabel = "Watch only" | "Paper trade candidate" | "Skip" | "High risk / avoid";
+export type PolymarketDecisionLabel = "Watch only" | "Paper YES candidate" | "Paper NO candidate" | "Skip" | "Avoid due to unclear rules";
 export type CatalystType =
   | "earnings"
   | "analyst"
@@ -187,6 +190,30 @@ export type CatalystProfile = {
   invalidation: string;
 };
 
+export type BeginnerActionPlan = {
+  marketType: MarketType;
+  decisionLabel: StockDecisionLabel | PolymarketDecisionLabel;
+  badge: ActionBadge;
+  plainEnglish: {
+    whatThisMeans: string;
+    whyItMattersToday: string;
+    whyThisCouldStillFail: string;
+  };
+  manualChecklist: string[];
+  riskTranslation: string;
+  doNotTouchIf: string[];
+  maxPaperRisk: "$2-$5";
+  suggestedPaperPositionSize: string;
+  whenToExit: string;
+  whenToSkipCompletely: string;
+  telegramSummary: {
+    whatItIs: string;
+    whyItMatters: string;
+    whatToCheck: string[];
+    whyToSkip: string;
+  };
+};
+
 export type UnifiedOpportunity = {
   id: string;
   marketType: MarketType;
@@ -207,6 +234,7 @@ export type UnifiedOpportunity = {
   dataConfidence: Confidence;
   suggestedPaperAction: string;
   skipReason: string;
+  actionPlan: BeginnerActionPlan;
   source: "stock-scan" | "polymarket-scan" | "cross-market" | "leaderboard";
 };
 
