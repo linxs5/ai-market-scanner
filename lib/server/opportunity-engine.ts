@@ -8,14 +8,20 @@ import type {
   SetupReport,
   UnifiedOpportunity
 } from "@/lib/shared/types";
+import { WATCHLIST } from "@/lib/shared/watchlist";
 import { classifyPolymarketCatalyst, classifyStockCatalyst } from "./catalysts";
 import { buildCrossMarketInsights } from "./cross-market";
+import type { EarningsSignal } from "./earnings";
+import { fetchEarningsSignals } from "./earnings";
 import { getSetupCheck } from "./env";
-import { getEarningsWatch, getMacroRiskToday } from "./macro";
+import { getMacroRiskToday } from "./macro";
 import { runPolymarketScan } from "./polymarket";
 import { runMarketScan } from "./scan";
+import type { SecEightKSignal } from "./sec";
+import { fetchSecEightKSignals } from "./sec";
 
-function stockDataConfidence(setup: SetupReport) {
+function stockDataConfidence(setup: SetupReport, secSignal?: SecEightKSignal, earningsSignal?: EarningsSignal) {
+  if (secSignal?.mappingConfidence === "low" || earningsSignal?.confidence === "low") return "medium";
   if (setup.news.length >= 2 && setup.quote.source) return "high";
   if (setup.news.length >= 1) return "medium";
   return "low";
@@ -30,30 +36,41 @@ function badgeFor(riskLevel: string, confidence: string, score: number): ActionB
 }
 
 function stockDecision(setup: SetupReport) {
-  if (setup.riskLevel === "high") return "High risk / avoid" as const;
-  if (setup.ai.confidence === "low" || setup.score < 60) return "Watch only" as const;
+  if (setup.riskLevel === "high") return "Avoid" as const;
+  if (setup.ai.confidence === "low" || setup.score < 60) return "Watch" as const;
   if (setup.warnings.length >= 3) return "Skip" as const;
-  return "Paper trade candidate" as const;
+  return "Paper Candidate" as const;
 }
 
-function makeStockActionPlan(setup: SetupReport): BeginnerActionPlan {
+function makeStockActionPlan(setup: SetupReport, secSignal?: SecEightKSignal, earningsSignal?: EarningsSignal): BeginnerActionPlan {
   const price = setup.quote.price;
   const stopText = setup.ai.stopLoss || setup.ai.invalidation;
+  const externalReasons = [
+    secSignal?.hasEightKToday ? secSignal.explanation : null,
+    earningsSignal?.badge ? earningsSignal.explanation : null
+  ].filter(Boolean);
+  const externalWarnings = [
+    earningsSignal?.warning,
+    secSignal?.mappingConfidence === "low" ? "SEC ticker mapping was uncertain, so filing data should not be treated as complete." : null
+  ].filter(Boolean);
   return {
     marketType: "stock",
     decisionLabel: stockDecision(setup),
     badge: badgeFor(setup.riskLevel, setup.ai.confidence, setup.score),
     plainEnglish: {
-      whatThisMeans: `${setup.ticker} is showing a research setup based on fetched price/news data. This is not a command to buy.`,
-      whyItMattersToday: setup.ai.catalyst,
-      whyThisCouldStillFail: setup.ai.bearCase
+      whatThisMeans: `${setup.ticker} is a research idea because the app found a price move, recent news, or a primary-data event. This is not a command to buy.`,
+      whyItMattersToday: [setup.ai.catalyst, ...externalReasons].join(" "),
+      whyThisCouldStillFail: [setup.ai.bearCase, ...externalWarnings].join(" ")
     },
     manualChecklist: [
       "Open Robinhood manually.",
       `Search the ticker: ${setup.ticker}.`,
-      "Check the current price.",
+      "Check the current Robinhood price before doing anything.",
       `Compare Robinhood price to the app price near $${price.toFixed(2)}.`,
-      "If price moved too far from the app price, skip.",
+      "If the price moved more than about 1%-2% from the app price, skip and re-run research.",
+      "Check today volume and bid/ask spread on Robinhood if available.",
+      "Read the newest headline or SEC filing first. Do not rely on the ticker moving by itself.",
+      earningsSignal?.badge ? `Earnings check: ${earningsSignal.explanation}` : "Check whether earnings are today or this week before paper-tracking.",
       "Use a limit order only if you are paper-tracking the idea.",
       "Never use a market order.",
       "Suggested paper position size for a $100 account: about $10-$20.",
@@ -71,6 +88,8 @@ function makeStockActionPlan(setup: SetupReport): BeginnerActionPlan {
       "Volume is weak.",
       "Market is moving on rumor only.",
       "Confidence is low.",
+      "Earnings are about to hit and you do not know the report time.",
+      "SEC filing exists but you did not read what changed.",
       "You do not understand the thesis."
     ],
     maxPaperRisk: "$2-$5",
@@ -82,6 +101,7 @@ function makeStockActionPlan(setup: SetupReport): BeginnerActionPlan {
       whyItMatters: setup.ai.catalyst,
       whatToCheck: [
         "Current Robinhood price versus app price.",
+        "Any SEC 8-K or earnings badge.",
         "Limit-order plan only.",
         "Max paper risk stays between $2 and $5.",
         "You understand the catalyst and invalidation."
@@ -92,10 +112,10 @@ function makeStockActionPlan(setup: SetupReport): BeginnerActionPlan {
 }
 
 function polymarketDecision(market: PolymarketOpportunity) {
-  if (market.riskFlags.resolutionSourceRisk || market.riskFlags.ambiguousWording) return "Avoid due to unclear rules" as const;
-  if (market.riskLevel === "high" || market.confidence === "low") return "Watch only" as const;
-  if ((market.yesPrice ?? 0.5) <= 0.5) return "Paper YES candidate" as const;
-  if ((market.noPrice ?? 0.5) <= 0.5) return "Paper NO candidate" as const;
+  if (market.riskFlags.resolutionSourceRisk || market.riskFlags.ambiguousWording) return "Avoid" as const;
+  if (market.riskLevel === "high" || market.confidence === "low") return "Watch" as const;
+  if ((market.yesPrice ?? 0.5) <= 0.5) return "Paper YES Candidate" as const;
+  if ((market.noPrice ?? 0.5) <= 0.5) return "Paper NO Candidate" as const;
   return "Skip" as const;
 }
 
@@ -120,7 +140,8 @@ function makePolymarketActionPlan(market: PolymarketOpportunity): BeginnerAction
       `Check NO price: ${no}.`,
       `Check liquidity and volume: liquidity about $${Math.round(market.liquidity)}, 24h volume about $${Math.round(market.volume24hr)}.`,
       "Check if the app odds still match Polymarket.",
-      "If odds moved too much, skip.",
+      "If YES or NO moved more than about 5 cents from the app odds, skip and re-run research.",
+      "Compare best bid and best ask. If the gap is wide, do not touch it.",
       "Suggested paper position size: about $5-$10.",
       "Max paper risk: $2-$5.",
       `YES gets stronger if: ${market.whatWouldMoveIt[0] ?? "fresh official news supports YES."}`,
@@ -159,8 +180,20 @@ function makePolymarketActionPlan(market: PolymarketOpportunity): BeginnerAction
   };
 }
 
-function stockToOpportunity(setup: SetupReport): UnifiedOpportunity {
+function stockToOpportunity(setup: SetupReport, secSignal?: SecEightKSignal, earningsSignal?: EarningsSignal): UnifiedOpportunity {
   const catalyst = classifyStockCatalyst(setup.news, setup.ai.catalyst);
+  const catalystBadges = [secSignal?.badge, earningsSignal?.badge].filter((badge): badge is NonNullable<typeof badge> => Boolean(badge));
+  const monitorNext = [
+    ...setup.ai.checkBeforeTrading,
+    secSignal?.hasEightKToday ? secSignal.explanation : null,
+    earningsSignal?.warning
+  ].filter((item): item is string => Boolean(item));
+  const confidence = secSignal?.mappingConfidence === "low" && setup.ai.confidence === "high" ? "medium" : setup.ai.confidence;
+  const warnings = [
+    ...setup.warnings,
+    ...(secSignal?.warnings ?? []),
+    earningsSignal?.warning
+  ].filter((item): item is string => Boolean(item));
   return {
     id: `stock-${setup.ticker}`,
     marketType: "stock",
@@ -170,18 +203,27 @@ function stockToOpportunity(setup: SetupReport): UnifiedOpportunity {
     score: setup.score,
     attentionPriority: setup.score,
     scoreBreakdown: setup.breakdown,
-    catalyst,
+    catalyst: secSignal?.hasEightKToday
+      ? {
+          ...catalyst,
+          type: "SEC filing",
+          sourceQuality: secSignal.mappingConfidence,
+          whyItMatters: `${catalyst.whyItMatters} ${secSignal.explanation}`,
+          whatWouldMoveTheMarket: [secSignal.explanation, ...catalyst.whatWouldMoveTheMarket]
+        }
+      : catalyst,
     bullCase: setup.ai.bullCase,
     bearCase: setup.ai.bearCase,
     trap: setup.ai.whyToSkip,
     invalidation: setup.ai.invalidation,
-    monitorNext: setup.ai.checkBeforeTrading,
+    monitorNext,
     riskLevel: setup.riskLevel,
-    confidence: setup.ai.confidence,
-    dataConfidence: stockDataConfidence(setup),
-    suggestedPaperAction: setup.ai.confidence === "low" ? "Skip or watch only." : "Paper-trade only after manual checklist passes.",
-    skipReason: setup.ai.whyToSkip,
-    actionPlan: makeStockActionPlan(setup),
+    confidence,
+    dataConfidence: stockDataConfidence(setup, secSignal, earningsSignal),
+    catalystBadges,
+    suggestedPaperAction: confidence === "low" ? "Skip or watch only." : "Paper-trade only after manual checklist passes.",
+    skipReason: warnings.length ? warnings.join(" ") : setup.ai.whyToSkip,
+    actionPlan: makeStockActionPlan({ ...setup, warnings }, secSignal, earningsSignal),
     source: "stock-scan"
   };
 }
@@ -206,11 +248,28 @@ function polymarketToOpportunity(market: PolymarketOpportunity): UnifiedOpportun
     riskLevel: market.riskLevel,
     confidence: market.confidence,
     dataConfidence: market.dataConfidence,
+    catalystBadges: [],
     suggestedPaperAction: market.confidence === "low" ? "Skip or monitor only." : "Paper-track thesis; no wallet or order placement.",
     skipReason: market.whyToSkip,
     actionPlan: makePolymarketActionPlan(market),
     source: "polymarket-scan"
   };
+}
+
+function makeEarningsWatchItems(signals: Record<string, EarningsSignal>) {
+  return Object.values(signals).map((signal) => ({
+    ticker: signal.ticker,
+    status: signal.reportingToday ? ("today" as const) : signal.reportingSoon ? ("soon" as const) : signal.confidence === "low" ? ("unavailable" as const) : ("available" as const),
+    note: [
+      signal.explanation,
+      signal.warning,
+      signal.epsSurprisePercent === null ? null : `EPS surprise: ${signal.epsSurprisePercent}%.`
+    ]
+      .filter(Boolean)
+      .join(" "),
+    reportDate: signal.reportDate,
+    epsSurprisePercent: signal.epsSurprisePercent
+  }));
 }
 
 function makeReport(
@@ -260,8 +319,19 @@ export async function runOpportunityEngine(): Promise<OpportunityEngineResponse>
   }
 
   const polymarketScan = await runPolymarketScan();
+  const watchedTickers = [...new Set([...WATCHLIST, ...(stockScan?.setups.map((setupReport) => setupReport.ticker) ?? [])])];
+  const [secSignals, earningsSignals] = await Promise.all([
+    fetchSecEightKSignals(watchedTickers).catch((error) => {
+      warnings.push(error instanceof Error ? error.message : "SEC 8-K watcher failed.");
+      return {} as Record<string, SecEightKSignal>;
+    }),
+    fetchEarningsSignals(watchedTickers).catch((error) => {
+      warnings.push(error instanceof Error ? error.message : "Earnings watcher failed.");
+      return {} as Record<string, EarningsSignal>;
+    })
+  ]);
   const crossMarketInsights = buildCrossMarketInsights(stockScan, polymarketScan);
-  const stockOpportunities = stockScan?.setups.map(stockToOpportunity) ?? [];
+  const stockOpportunities = stockScan?.setups.map((setupReport) => stockToOpportunity(setupReport, secSignals[setupReport.ticker], earningsSignals[setupReport.ticker])) ?? [];
   const polymarketOpportunities = polymarketScan.opportunities.map(polymarketToOpportunity);
   const opportunities = [...stockOpportunities, ...polymarketOpportunities].sort(
     (a, b) => b.attentionPriority - a.attentionPriority || b.score - a.score
@@ -282,7 +352,7 @@ export async function runOpportunityEngine(): Promise<OpportunityEngineResponse>
       makeReport("Weekend Deep Dive", opportunities, topCrossMarketInsight)
     ],
     macroRiskToday: getMacroRiskToday(),
-    earningsWatch: await getEarningsWatch(),
+    earningsWatch: makeEarningsWatchItems(earningsSignals),
     warnings: [...warnings, ...polymarketScan.warnings]
   };
 }

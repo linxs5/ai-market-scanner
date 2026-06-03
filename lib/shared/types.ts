@@ -10,8 +10,8 @@ export type RegimeLabel =
 export type Confidence = "low" | "medium" | "high";
 export type MarketType = "stock" | "polymarket";
 export type ActionBadge = "Beginner Safe" | "Needs Research" | "Too Risky" | "Watch Only" | "Paper Candidate";
-export type StockDecisionLabel = "Watch only" | "Paper trade candidate" | "Skip" | "High risk / avoid";
-export type PolymarketDecisionLabel = "Watch only" | "Paper YES candidate" | "Paper NO candidate" | "Skip" | "Avoid due to unclear rules";
+export type StockDecisionLabel = "Watch" | "Paper Candidate" | "Skip" | "Avoid";
+export type PolymarketDecisionLabel = "Watch" | "Paper YES Candidate" | "Paper NO Candidate" | "Skip" | "Avoid";
 export type CatalystType =
   | "earnings"
   | "analyst"
@@ -232,6 +232,7 @@ export type UnifiedOpportunity = {
   riskLevel: RiskLevel;
   confidence: Confidence;
   dataConfidence: Confidence;
+  catalystBadges: string[];
   suggestedPaperAction: string;
   skipReason: string;
   actionPlan: BeginnerActionPlan;
@@ -246,8 +247,10 @@ export type MacroRiskEvent = {
 
 export type EarningsWatchItem = {
   ticker: string;
-  status: "provider-needed" | "available";
+  status: "provider-needed" | "available" | "today" | "soon" | "unavailable";
   note: string;
+  reportDate?: string | null;
+  epsSurprisePercent?: number | null;
 };
 
 export type IntelligenceReport = {

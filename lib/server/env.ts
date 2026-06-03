@@ -34,7 +34,9 @@ export function getSetupCheck() {
     publicApis: {
       POLYMARKET_GAMMA_API: true,
       POLYMARKET_DATA_API: true,
-      POLYMARKET_CLOB_PUBLIC_API: true
+      POLYMARKET_CLOB_PUBLIC_API: true,
+      SEC_EDGAR_DATA_API: true,
+      NETLIFY_BLOBS: true
     },
     requiredMissing: Object.entries(configured)
       .filter(([key, value]) => !value && ["OPENAI_API_KEY", "FINNHUB_API_KEY"].includes(key))

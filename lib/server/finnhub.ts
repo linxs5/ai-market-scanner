@@ -23,6 +23,20 @@ type FinnhubNews = {
   datetime?: number;
 };
 
+type FinnhubEarningsCalendarItem = {
+  symbol?: string;
+  date?: string;
+  hour?: string;
+  epsActual?: number | null;
+  epsEstimate?: number | null;
+  revenueActual?: number | null;
+  revenueEstimate?: number | null;
+};
+
+type FinnhubEarningsCalendarResponse = {
+  earningsCalendar?: FinnhubEarningsCalendarItem[];
+};
+
 async function finnhubFetch<T>(path: string): Promise<T> {
   if (!env.finnhubKey) {
     throw new Error("FINNHUB_API_KEY is required for market scans.");
@@ -90,4 +104,11 @@ export async function fetchFinnhubNews(ticker: string): Promise<NewsItem[]> {
         ? new Date(item.datetime * 1000).toISOString()
         : new Date().toISOString()
     }));
+}
+
+export async function fetchFinnhubEarningsCalendar(from: string, to: string, ticker?: string) {
+  const params = new URLSearchParams({ from, to });
+  if (ticker) params.set("symbol", ticker);
+  const raw = await finnhubFetch<FinnhubEarningsCalendarResponse>(`/calendar/earnings?${params.toString()}`);
+  return raw.earningsCalendar ?? [];
 }

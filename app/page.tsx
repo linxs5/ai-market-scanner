@@ -40,11 +40,14 @@ import {
   analyzePaperTrades,
   loadPaperTrades,
   loadResearchFeed,
+  loadServerPaperTrades,
+  mergePaperTrades,
   PaperTrade,
   PaperTradeOutcome,
   polymarketToPaperTrade,
   ResearchFeedItem,
   savePaperTrades,
+  saveServerPaperTrades,
   saveResearchFeed,
   setupToPaperTrade
 } from "@/lib/client/paper-trades";
@@ -114,6 +117,13 @@ function riskTone(risk: string) {
   return "red";
 }
 
+function decisionTone(label: string) {
+  const normalized = label.toLowerCase();
+  if (normalized.includes("skip") || normalized.includes("avoid")) return "red";
+  if (normalized.includes("paper")) return "green";
+  return "yellow";
+}
+
 function formatMoney(value: number) {
   if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `$${(value / 1_000).toFixed(1)}K`;
@@ -133,6 +143,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [alertResult, setAlertResult] = useState<AlertResponse | null>(null);
   const [sendOpportunityTelegram, setSendOpportunityTelegram] = useState(false);
+  const [paperTradeStorage, setPaperTradeStorage] = useState("localStorage fallback");
   const [opportunityAlertStatus, setOpportunityAlertStatus] = useState<OpportunityAlertStatus>({
     state: "idle",
     message: "Telegram alert skipped",
@@ -141,6 +152,7 @@ export default function Home() {
 
   useEffect(() => {
     void checkSetup();
+    void hydratePaperTrades();
   }, []);
 
   const analytics = useMemo(() => analyzePaperTrades(paperTrades), [paperTrades]);
@@ -148,6 +160,20 @@ export default function Home() {
   function persistTrades(nextTrades: PaperTrade[]) {
     setPaperTrades(nextTrades);
     savePaperTrades(nextTrades);
+    void saveServerPaperTrades(nextTrades).then((result) => {
+      setPaperTradeStorage(result.available ? "Netlify Blob + localStorage" : `localStorage fallback${result.warning ? `: ${result.warning}` : ""}`);
+    });
+  }
+
+  async function hydratePaperTrades() {
+    const localTrades = loadPaperTrades();
+    const result = await loadServerPaperTrades();
+    setPaperTradeStorage(result.available ? "Netlify Blob + localStorage" : `localStorage fallback${result.warning ? `: ${result.warning}` : ""}`);
+    if (!result.available || !result.trades.length) return;
+
+    const merged = mergePaperTrades(localTrades, result.trades);
+    setPaperTrades(merged);
+    savePaperTrades(merged);
   }
 
   function persistFeed(items: ResearchFeedItem[]) {
@@ -170,7 +196,9 @@ export default function Home() {
         publicApis: {
           POLYMARKET_GAMMA_API: true,
           POLYMARKET_DATA_API: true,
-          POLYMARKET_CLOB_PUBLIC_API: true
+          POLYMARKET_CLOB_PUBLIC_API: true,
+          SEC_EDGAR_DATA_API: true,
+          NETLIFY_BLOBS: true
         },
         requiredMissing: ["OPENAI_API_KEY", "FINNHUB_API_KEY"],
         optionalMissing: [
@@ -525,7 +553,7 @@ export default function Home() {
           />
         ) : null}
         {activeTab === "Paper Trades" ? (
-          <PaperTradesPanel trades={paperTrades} analytics={analytics} onOutcome={updateOutcome} />
+          <PaperTradesPanel trades={paperTrades} analytics={analytics} storageStatus={paperTradeStorage} onOutcome={updateOutcome} />
         ) : null}
         {activeTab === "Research Feed" ? <ResearchFeedPanel feed={feed} /> : null}
         {activeTab === "Setup" ? <SetupPanel setup={setup} onRefresh={checkSetup} /> : null}
@@ -599,8 +627,9 @@ function TopOpportunitiesPanel({
               <span className={badgeClass(opportunity.marketType === "stock" ? "blue" : "green")}>{opportunity.marketType}</span>
               <span className={badgeClass(scoreTone(opportunity.attentionPriority))}>attention {opportunity.attentionPriority}</span>
               <span className={badgeClass(opportunity.actionPlan.badge === "Beginner Safe" || opportunity.actionPlan.badge === "Paper Candidate" ? "green" : opportunity.actionPlan.badge === "Too Risky" ? "red" : "yellow")}>{opportunity.actionPlan.badge}</span>
-              <span className={badgeClass(opportunity.actionPlan.decisionLabel.includes("Skip") || opportunity.actionPlan.decisionLabel.includes("avoid") ? "red" : opportunity.actionPlan.decisionLabel.includes("Paper") ? "green" : "yellow")}>{opportunity.actionPlan.decisionLabel}</span>
+              <span className={badgeClass(decisionTone(opportunity.actionPlan.decisionLabel))}>{opportunity.actionPlan.decisionLabel}</span>
               <span className={badgeClass(opportunity.dataConfidence === "high" ? "green" : opportunity.dataConfidence === "medium" ? "yellow" : "red")}>data {opportunity.dataConfidence}</span>
+              {opportunity.catalystBadges.map((badge) => <span key={badge} className={badgeClass("blue")}>{badge}</span>)}
               <span className={badgeClass("yellow")}>Why skip this?</span>
             </div>
             <p className="mt-3 text-sm text-terminal-muted">{opportunity.current}</p>
@@ -637,7 +666,7 @@ function ActionPlansPanel({ engine, loading, onRun }: { engine: OpportunityEngin
     return riskRank[b.riskLevel] - riskRank[a.riskLevel] || b.attentionPriority - a.attentionPriority;
   })[0];
   const doNotTrade = opportunities
-    .filter((item) => item.actionPlan.badge === "Too Risky" || item.actionPlan.decisionLabel.includes("Skip") || item.actionPlan.decisionLabel.includes("avoid"))
+    .filter((item) => item.actionPlan.badge === "Too Risky" || ["skip", "avoid"].some((word) => item.actionPlan.decisionLabel.toLowerCase().includes(word)))
     .slice(0, 3);
   const gamePlan =
     bestStock || bestPolymarket
@@ -674,7 +703,8 @@ function BeginnerActionCard({ title, opportunity }: { title: string; opportunity
         </div>
         <div className="flex flex-wrap gap-2">
           <span className={badgeClass(plan.badge === "Beginner Safe" || plan.badge === "Paper Candidate" ? "green" : plan.badge === "Too Risky" ? "red" : "yellow")}>{plan.badge}</span>
-          <span className={badgeClass(plan.decisionLabel.includes("Skip") || plan.decisionLabel.includes("avoid") ? "red" : plan.decisionLabel.includes("Paper") ? "green" : "yellow")}>{plan.decisionLabel}</span>
+          <span className={badgeClass(decisionTone(plan.decisionLabel))}>{plan.decisionLabel}</span>
+          {opportunity.catalystBadges.map((badge) => <span key={badge} className={badgeClass("blue")}>{badge}</span>)}
         </div>
       </div>
       <div className="mt-4 grid gap-4 lg:grid-cols-3">
@@ -743,9 +773,12 @@ function EarningsWatchPanel({ items }: { items: { ticker: string; status: string
   return (
     <div className="rounded-md border border-terminal-line bg-terminal-panel p-4">
       <h2 className="text-lg font-semibold text-white">Earnings Watch</h2>
-      <p className="mt-2 text-sm text-terminal-muted">Placeholder until earnings-calendar provider support is enabled.</p>
+      <p className="mt-2 text-sm text-terminal-muted">Finnhub calendar results when the current key/plan returns them. Missing EPS fields are left blank.</p>
       <div className="mt-3 flex flex-wrap gap-2">
-        {items.map((item) => <span key={item.ticker} className={badgeClass("yellow")}>{item.ticker}: {item.status}</span>)}
+        {items.map((item) => <span key={item.ticker} className={badgeClass(item.status === "today" ? "red" : item.status === "soon" ? "yellow" : "blue")}>{item.ticker}: {item.status}</span>)}
+      </div>
+      <div className="mt-4 grid gap-2">
+        {items.map((item) => <p key={`${item.ticker}-note`} className="text-sm text-terminal-muted">{item.ticker}: {item.note}</p>)}
       </div>
     </div>
   );
@@ -1015,14 +1048,24 @@ function AlertsPanel({
   );
 }
 
-function PaperTradesPanel({ trades, analytics, onOutcome }: { trades: PaperTrade[]; analytics: ReturnType<typeof analyzePaperTrades>; onOutcome: (id: string, status: PaperTradeOutcome) => void }) {
+function PaperTradesPanel({
+  trades,
+  analytics,
+  storageStatus,
+  onOutcome
+}: {
+  trades: PaperTrade[];
+  analytics: ReturnType<typeof analyzePaperTrades>;
+  storageStatus: string;
+  onOutcome: (id: string, status: PaperTradeOutcome) => void;
+}) {
   return (
     <section className="grid gap-4">
       <div className="grid gap-4 sm:grid-cols-4">
         <Metric icon={<ClipboardCheck />} label="Ideas tracked" value={String(analytics.totalIdeas)} />
         <Metric icon={<CheckCircle2 />} label="Win rate" value={`${analytics.winRate}%`} />
-        <Metric icon={<LineChart />} label="Stock win rate" value={`${analytics.winRateByMarketType.stock}%`} />
-        <Metric icon={<Crosshair />} label="Polymarket win rate" value={`${analytics.winRateByMarketType.polymarket}%`} />
+        <Metric icon={<LineChart />} label="Open ideas" value={String(analytics.open)} />
+        <Metric icon={<Crosshair />} label="Skipped ideas" value={String(analytics.skipped)} />
       </div>
       <div className="rounded-md border border-terminal-line bg-terminal-panel p-4">
         <h2 className="text-lg font-semibold text-white">Learning analytics</h2>
@@ -1035,7 +1078,7 @@ function PaperTradesPanel({ trades, analytics, onOutcome }: { trades: PaperTrade
           <Info title="Most common failure" text={analytics.mostCommonFailureReason} />
         </div>
         <p className="mt-4 text-sm text-terminal-amber">{analytics.overconfidenceWarning}</p>
-        <p className="mt-2 text-sm text-terminal-muted">All analytics are localStorage-only for now. Supabase can replace this storage later.</p>
+        <p className="mt-2 text-sm text-terminal-muted">Storage: {storageStatus}. Notes stay attached to each paper idea.</p>
       </div>
       <div className="grid gap-3">
         {trades.length ? trades.map((trade) => (

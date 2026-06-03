@@ -53,6 +53,48 @@ export function savePaperTrades(trades: PaperTrade[]) {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(trades));
 }
 
+export async function loadServerPaperTrades(): Promise<{ available: boolean; trades: PaperTrade[]; warning?: string }> {
+  if (typeof window === "undefined") return { available: false, trades: [] };
+
+  try {
+    const response = await fetch("/.netlify/functions/paper-trades");
+    if (!response.ok) return { available: false, trades: [], warning: "Paper trade server storage did not respond." };
+    return (await response.json()) as { available: boolean; trades: PaperTrade[]; warning?: string };
+  } catch (error) {
+    return {
+      available: false,
+      trades: [],
+      warning: error instanceof Error ? error.message : "Paper trade server storage is unavailable."
+    };
+  }
+}
+
+export async function saveServerPaperTrades(trades: PaperTrade[]): Promise<{ available: boolean; warning?: string }> {
+  if (typeof window === "undefined") return { available: false };
+
+  try {
+    const response = await fetch("/.netlify/functions/paper-trades", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trades })
+    });
+    if (!response.ok) return { available: false, warning: "Paper trade server storage did not save." };
+    const payload = (await response.json()) as { available: boolean; warning?: string };
+    return { available: payload.available, warning: payload.warning };
+  } catch (error) {
+    return {
+      available: false,
+      warning: error instanceof Error ? error.message : "Paper trade server storage is unavailable."
+    };
+  }
+}
+
+export function mergePaperTrades(localTrades: PaperTrade[], serverTrades: PaperTrade[]) {
+  const merged = new Map<string, PaperTrade>();
+  [...serverTrades, ...localTrades].forEach((trade) => merged.set(trade.id, trade));
+  return [...merged.values()].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
 export function setupToPaperTrade(setup: SetupReport, status: PaperTradeOutcome = "open"): PaperTrade {
   return {
     id: `${setup.ticker}-${Date.now()}`,

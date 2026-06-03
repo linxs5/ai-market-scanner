@@ -9,6 +9,7 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@netlify/blobs": "^10.7.9",
     "@netlify/functions": "^2.8.2",
     "@netlify/plugin-nextjs": "^5.10.1",
     "lucide-react": "^0.468.0",

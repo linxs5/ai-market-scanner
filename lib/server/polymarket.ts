@@ -7,6 +7,7 @@ import type {
   SmartMoneyTrader,
   SmartMoneyWatch
 } from "@/lib/shared/types";
+import { DEFAULT_SCORING_CONFIG } from "./scoring-config";
 
 const GAMMA_BASE_URL = "https://gamma-api.polymarket.com";
 const DATA_BASE_URL = "https://data-api.polymarket.com";
@@ -135,26 +136,13 @@ async function fetchPriceHistoryChange(market: GammaMarket): Promise<number | nu
 }
 
 function detectCatalystStrength(text: string, volume24hr: number, oneDayMove: number | null) {
-  const catalystWords = [
-    "election",
-    "fed",
-    "inflation",
-    "cpi",
-    "earnings",
-    "ipo",
-    "bitcoin",
-    "crypto",
-    "court",
-    "war",
-    "approval",
-    "deadline",
-    "rate",
-    "tariff",
-    "ai",
-    "nvidia"
-  ];
-  const keywordHits = catalystWords.filter((word) => text.toLowerCase().includes(word)).length;
-  return clamp(keywordHits * 12 + Math.min(volume24hr / 10_000, 35) + Math.min(Math.abs(oneDayMove ?? 0) * 250, 30));
+  const config = DEFAULT_SCORING_CONFIG.polymarket;
+  const keywordHits = config.catalystWords.filter((word) => text.toLowerCase().includes(word)).length;
+  return clamp(
+    keywordHits * config.catalystKeywordPoints +
+      Math.min(volume24hr / config.catalystVolumeDivisor, config.catalystVolumeCap) +
+      Math.min(Math.abs(oneDayMove ?? 0) * config.catalystMoveMultiplier, config.catalystMoveCap)
+  );
 }
 
 function includesAny(text: string, words: string[]) {
@@ -173,14 +161,18 @@ function classifyResearchCategory(text: string, tags: string[]) {
 }
 
 function categoryWeight(category: string, isFreshCatalyst: boolean, clearEdge: boolean, nearResolution: boolean, highLiquidity: boolean, longDated: boolean) {
-  if (["politics", "macro/economics", "crypto", "financial markets"].includes(category)) return 14;
-  if (category === "major current news") return 10;
+  const weights = DEFAULT_SCORING_CONFIG.polymarket.categoryWeights;
+  if (category === "politics") return weights.politics;
+  if (category === "macro/economics") return weights.macroEconomics;
+  if (category === "crypto") return weights.crypto;
+  if (category === "financial markets") return weights.financialMarkets;
+  if (category === "major current news") return weights.majorCurrentNews;
   if (category === "sports") {
-    if (highLiquidity && nearResolution && isFreshCatalyst && clearEdge) return -2;
-    if (longDated) return -28;
-    return -18;
+    if (highLiquidity && nearResolution && isFreshCatalyst && clearEdge) return weights.sportsQualified;
+    if (longDated) return weights.sportsLongDated;
+    return weights.sportsUnqualified;
   }
-  return -4;
+  return weights.general;
 }
 
 function resolutionClarity(description: string, resolutionSource: string) {
@@ -204,6 +196,7 @@ function probableTrap(flags: Omit<PolymarketRiskFlags, "probableTrap">, yesPrice
 }
 
 async function scoreMarket(event: GammaEvent, market: GammaMarket, smartMoneyAvailable: boolean): Promise<PolymarketOpportunity> {
+  const config = DEFAULT_SCORING_CONFIG.polymarket;
   const outcomes = parseJsonArray<string>(market.outcomes, ["Yes", "No"]);
   const outcomePrices = parseJsonArray<string | number>(market.outcomePrices, []).map((price) => toNumber(price, 0));
   const yesPrice = outcomePrices[0] ?? null;
@@ -226,12 +219,12 @@ async function scoreMarket(event: GammaEvent, market: GammaMarket, smartMoneyAva
   const tagLabels = (event.tags ?? []).map((tag) => `${tag.label ?? ""} ${tag.slug ?? ""}`);
   const competitiveOdds = yesPrice !== null ? 100 - Math.abs(yesPrice - 0.5) * 200 : 35;
 
-  const liquidityVolume = clamp(Math.log10(volume + liquidity + 1) * 16);
+  const liquidityVolume = clamp(Math.log10(volume + liquidity + 1) * config.liquidityLogMultiplier);
   const oddsMomentum = clamp(
-    Math.abs(oneDayPriceChange ?? 0) * 260 +
-      Math.abs(oneWeekPriceChange ?? 0) * 100 +
-      Math.abs(priceHistoryChange ?? 0) * 320 +
-      competitiveOdds * 0.25
+    Math.abs(oneDayPriceChange ?? 0) * config.oneDayMoveMultiplier +
+      Math.abs(oneWeekPriceChange ?? 0) * config.oneWeekMoveMultiplier +
+      Math.abs(priceHistoryChange ?? 0) * config.priceHistoryMoveMultiplier +
+      competitiveOdds * config.competitiveOddsWeight
   );
   const catalystStrength = detectCatalystStrength(text, volume24hr, oneDayPriceChange);
   const clarity = resolutionClarity(description, resolutionSource);
@@ -240,10 +233,10 @@ async function scoreMarket(event: GammaEvent, market: GammaMarket, smartMoneyAva
   const crowdSignal = clamp(toNumber(event.competitive) * 75 + (smartMoneyAvailable ? 15 : 0) + Math.min(openInterest / 100_000, 10));
   const researchCategory = classifyResearchCategory(text, tagLabels);
   const isFreshCatalyst = catalystStrength >= 55 || Math.abs(oneDayPriceChange ?? 0) >= 0.04 || Math.abs(priceHistoryChange ?? 0) >= 0.04;
-  const nearResolution = timeRemainingDays !== null && timeRemainingDays <= 14;
-  const longDated = timeRemainingDays === null || timeRemainingDays > 60;
-  const highLiquidity = liquidity >= 25_000 && volume24hr >= 2_500;
-  const clearEdge = clarity >= 70 && (spread === null || spread <= 0.03);
+  const nearResolution = timeRemainingDays !== null && timeRemainingDays <= config.nearResolutionDays;
+  const longDated = timeRemainingDays === null || timeRemainingDays > config.longDatedDays;
+  const highLiquidity = liquidity >= config.highLiquidityMinimum && volume24hr >= config.highVolume24hMinimum;
+  const clearEdge = clarity >= 70 && (spread === null || spread <= config.clearEdgeMaxSpread);
   const categoryBoost = categoryWeight(researchCategory, isFreshCatalyst, clearEdge, nearResolution, highLiquidity, longDated);
 
   const breakdown: PolymarketScoreBreakdown = {
@@ -256,28 +249,28 @@ async function scoreMarket(event: GammaEvent, market: GammaMarket, smartMoneyAva
   };
 
   const baseScore = round(
-    breakdown.liquidityVolume * 0.25 +
-      breakdown.oddsMomentum * 0.2 +
-      breakdown.catalystStrength * 0.2 +
-      breakdown.resolutionClarity * 0.15 +
-      breakdown.timeAttractiveness * 0.1 +
-      breakdown.crowdSignal * 0.1
+    breakdown.liquidityVolume * config.weights.liquidityVolume +
+      breakdown.oddsMomentum * config.weights.oddsMomentum +
+      breakdown.catalystStrength * config.weights.catalystStrength +
+      breakdown.resolutionClarity * config.weights.resolutionClarity +
+      breakdown.timeAttractiveness * config.weights.timeAttractiveness +
+      breakdown.crowdSignal * config.weights.crowdSignal
   );
-  const score = round(clamp(baseScore + categoryBoost * 0.45));
+  const score = round(clamp(baseScore + categoryBoost * config.rawScoreCategoryMultiplier));
   const attentionPriority = round(
     clamp(
       score +
         categoryBoost +
-        (isFreshCatalyst ? 8 : -5) +
-        (nearResolution ? 6 : 0) +
-        (researchCategory === "sports" && !(highLiquidity && nearResolution && isFreshCatalyst && clearEdge) ? -18 : 0)
+        (isFreshCatalyst ? config.freshCatalystAttentionBonus : config.staleCatalystAttentionPenalty) +
+        (nearResolution ? config.nearResolutionAttentionBonus : 0) +
+        (researchCategory === "sports" && !(highLiquidity && nearResolution && isFreshCatalyst && clearEdge) ? config.sportsAttentionPenalty : 0)
     )
   );
 
   const ambiguousWording = /consensus|credible reporting|substantially|significant|unclear|may|could/i.test(description);
   const resolutionSourceRisk = !market.resolutionSource && !event.resolutionSource;
-  const thinLiquidity = liquidity < 1_000 || volume24hr < 100;
-  const wideSpread = spread !== null && spread > 0.04;
+  const thinLiquidity = liquidity < config.thinLiquidityMinimum || volume24hr < config.thinVolume24hMinimum;
+  const wideSpread = spread !== null && spread > config.wideSpreadThreshold;
   const binaryNewsShock = /election|war|court|fed|inflation|crypto|bitcoin|earnings|approval/i.test(text);
   const crowdedTrade = yesPrice !== null && (yesPrice > 0.85 || yesPrice < 0.15);
   const manipulationWhaleRisk = liquidity < 10_000 && volume24hr > liquidity * 3;
