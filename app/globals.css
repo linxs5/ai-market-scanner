@@ -1,0 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #050b12;
+  color: #d9e7f2;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+::selection {
+  background: rgba(56, 211, 255, 0.28);
+}
+
+.terminal-grid {
+  background-image:
+    linear-gradient(rgba(56, 211, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 211, 255, 0.04) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
