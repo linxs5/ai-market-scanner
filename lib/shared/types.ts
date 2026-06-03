@@ -338,3 +338,105 @@ export type AlertResponse = {
   deliveredChannels: AlertChannel[];
   warnings: string[];
 };
+
+export type DailyReportType = "morning" | "midday" | "closing";
+
+export type DailyActionIdea = {
+  id: string;
+  title: string;
+  symbol: string;
+  actionLabel: string;
+  reason: string;
+  current: string;
+  entryZone: string;
+  stopInvalidation: string;
+  target: string;
+  maxPaperRisk: "$2-$5";
+  robinhoodSteps: string[];
+  doNotTouchIf: string[];
+  watchNext: string[];
+  riskNote?: string;
+};
+
+export type LongTermIdea = {
+  id: string;
+  symbol: string;
+  thesis: string;
+  whyMonthsYears: string;
+  risk: string;
+  betterEntryCondition: string;
+  dcaIdea: string;
+  robinhoodSteps: string[];
+  label: "Not a day trade";
+};
+
+export type PolymarketActionIdea = {
+  id: string;
+  title: string;
+  yesPrice: string;
+  noPrice: string;
+  actionLabel: string;
+  yesMeans: string;
+  noMeans: string;
+  whyOddsMayMove: string;
+  resolutionEvent: string;
+  checkBeforeTouching: string[];
+  suggestedMaxRisk: "$2-$5";
+  compoundingPlan: string[];
+  polymarketSteps: string[];
+};
+
+export type PolymarketHourlyWatch = {
+  id: string;
+  marketTitle: string;
+  whyCheckThisHour: string;
+  yesMover: string;
+  noMover: string;
+  alertTrigger: string;
+  riskNote: string;
+};
+
+export type SavedDailyReport = {
+  id: string;
+  timestamp: string;
+  reportType: DailyReportType;
+  title: "Morning Brief" | "Midday Update" | "Closing Watchlist";
+  topDayTradeIdeas: DailyActionIdea[];
+  topLongTermIdeas: LongTermIdea[];
+  topPolymarketIdeas: PolymarketActionIdea[];
+  hourlyPolymarketWatchlist: PolymarketHourlyWatch[];
+  skippedAvoidList: string[];
+  oneSentencePlan: string;
+  telegram: {
+    attempted: boolean;
+    sent: boolean;
+    deliveredChannels: AlertChannel[];
+    warnings: string[];
+    error: string | null;
+    attemptedAt: string | null;
+  };
+  errors: string[];
+  schedule: {
+    configuredUtc: string;
+    etEstUtc: string;
+    etEdtUtc: string;
+    dstNote: string;
+  };
+};
+
+export type ReportDiagnostics = {
+  lastScheduledRun: string | null;
+  lastTelegramAttempt: string | null;
+  lastTelegramError: string | null;
+  lastReportSavedTime: string | null;
+  currentUtcTime: string;
+  expectedNextRunTime: string;
+  configuredUtcTimes: Record<DailyReportType, string>;
+  dstNote: string;
+};
+
+export type SavedReportsResponse = {
+  reports: SavedDailyReport[];
+  diagnostics: ReportDiagnostics;
+  warning?: string;
+};

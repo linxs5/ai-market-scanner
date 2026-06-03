@@ -31,6 +31,8 @@ import type {
   OpportunityEngineResponse,
   PolymarketOpportunity,
   PolymarketScanResponse,
+  SavedDailyReport,
+  SavedReportsResponse,
   ScanResponse,
   SetupCheckResponse,
   SetupReport,
@@ -54,7 +56,9 @@ import {
 
 type Tab =
   | "Top Opportunities"
+  | "Today's Action Plan"
   | "Action Plans"
+  | "Saved Reports"
   | "Stock Scanner"
   | "Polymarket Scanner"
   | "Cross-Market Opportunities"
@@ -81,7 +85,9 @@ type OpportunityAlertStatus = {
 
 const tabs: Tab[] = [
   "Top Opportunities",
+  "Today's Action Plan",
   "Action Plans",
+  "Saved Reports",
   "Stock Scanner",
   "Polymarket Scanner",
   "Cross-Market Opportunities",
@@ -137,6 +143,7 @@ export default function Home() {
   const [polyScan, setPolyScan] = useState<PolymarketScanResponse | null>(null);
   const [crossMarket, setCrossMarket] = useState<CrossMarketResponse | null>(null);
   const [setup, setSetup] = useState<SetupCheckResponse | null>(null);
+  const [savedReports, setSavedReports] = useState<SavedReportsResponse | null>(null);
   const [paperTrades, setPaperTrades] = useState<PaperTrade[]>(loadPaperTrades);
   const [feed, setFeed] = useState<ResearchFeedItem[]>(loadResearchFeed);
   const [loading, setLoading] = useState<"stock" | "polymarket" | "cross" | "alert" | "opportunity" | null>(null);
@@ -144,6 +151,7 @@ export default function Home() {
   const [alertResult, setAlertResult] = useState<AlertResponse | null>(null);
   const [sendOpportunityTelegram, setSendOpportunityTelegram] = useState(false);
   const [paperTradeStorage, setPaperTradeStorage] = useState("localStorage fallback");
+  const [beginnerMode, setBeginnerMode] = useState(true);
   const [opportunityAlertStatus, setOpportunityAlertStatus] = useState<OpportunityAlertStatus>({
     state: "idle",
     message: "Telegram alert skipped",
@@ -152,6 +160,7 @@ export default function Home() {
 
   useEffect(() => {
     void checkSetup();
+    void loadSavedReportsNow();
     void hydratePaperTrades();
   }, []);
 
@@ -215,6 +224,36 @@ export default function Home() {
         ]
       });
       setError(caught instanceof Error ? caught.message : "Setup check failed.");
+    }
+  }
+
+  async function loadSavedReportsNow() {
+    try {
+      const response = await fetch("/.netlify/functions/reports");
+      if (!response.ok) throw new Error("Saved reports fetch failed.");
+      setSavedReports((await response.json()) as SavedReportsResponse);
+    } catch {
+      setSavedReports(null);
+    }
+  }
+
+  async function saveManualReport(reportType: "morning" | "midday" | "closing" = "morning") {
+    setLoading("opportunity");
+    setError(null);
+    try {
+      const response = await fetch("/.netlify/functions/reports", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reportType })
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? "Report save failed.");
+      await loadSavedReportsNow();
+      setActiveTab("Saved Reports");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Report save failed.");
+    } finally {
+      setLoading(null);
     }
   }
 
@@ -282,6 +321,7 @@ export default function Home() {
         })
       );
       await maybeSendOpportunityTelegramAlerts(result.opportunities);
+      await loadSavedReportsNow();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Opportunity engine failed.");
       setOpportunityAlertStatus({
@@ -517,6 +557,10 @@ export default function Home() {
         </nav>
 
         {error ? <ErrorBanner message={error} /> : null}
+        <label className="flex w-fit items-center gap-3 rounded-md border border-terminal-line bg-terminal-panel px-3 py-2 text-sm text-terminal-muted">
+          <input type="checkbox" checked={beginnerMode} onChange={(event) => setBeginnerMode(event.target.checked)} className="h-4 w-4 accent-terminal-cyan" />
+          Beginner Mode
+        </label>
 
         {activeTab === "Top Opportunities" ? (
           <TopOpportunitiesPanel
@@ -526,8 +570,14 @@ export default function Home() {
             alertStatus={opportunityAlertStatus}
           />
         ) : null}
+        {activeTab === "Today's Action Plan" ? (
+          <TodayActionPlanPanel report={savedReports?.reports[0] ?? null} beginnerMode={beginnerMode} loading={loading === "opportunity"} onSaveReport={() => saveManualReport("morning")} />
+        ) : null}
         {activeTab === "Action Plans" ? (
           <ActionPlansPanel engine={engine} loading={loading === "opportunity"} onRun={runOpportunityEngineNow} />
+        ) : null}
+        {activeTab === "Saved Reports" ? (
+          <SavedReportsPanel savedReports={savedReports} loading={loading === "opportunity"} onRefresh={loadSavedReportsNow} onSaveReport={saveManualReport} />
         ) : null}
         {activeTab === "Stock Scanner" ? (
           <StockScanner scan={stockScan} loading={loading === "stock"} onRun={runStockScan} onPaperTrade={addStockTrade} setup={setup} />
@@ -550,6 +600,7 @@ export default function Home() {
             sendOpportunityTelegram={sendOpportunityTelegram}
             onToggleOpportunityTelegram={setSendOpportunityTelegram}
             opportunityAlertStatus={opportunityAlertStatus}
+            diagnostics={savedReports?.diagnostics ?? null}
           />
         ) : null}
         {activeTab === "Paper Trades" ? (
@@ -653,6 +704,120 @@ function TopOpportunitiesPanel({
       {engine ? <MacroRiskPanel items={engine.macroRiskToday} /> : null}
       {engine ? <EarningsWatchPanel items={engine.earningsWatch.slice(0, 8)} /> : null}
     </section>
+  );
+}
+
+function TodayActionPlanPanel({
+  report,
+  beginnerMode,
+  loading,
+  onSaveReport
+}: {
+  report: SavedDailyReport | null;
+  beginnerMode: boolean;
+  loading: boolean;
+  onSaveReport: () => void;
+}) {
+  return (
+    <section className="grid gap-4">
+      <ScannerHeader title="Today's Action Plan" subtitle="Daily command center for Robinhood and Polymarket research. Manual approval only." onRun={onSaveReport} loading={loading} />
+      {beginnerMode ? <Info title="Beginner Mode" text="Scores mean priority, not profit. Risk means how easily the idea can go wrong. Stop or invalidation means the reason to stop tracking the idea." /> : null}
+      {!report ? <EmptyState text="No saved report yet. Run Save Report to create today's action plan." /> : null}
+      {report ? (
+        <div className="grid gap-4">
+          <Info title="Today's one-sentence plan" text={report.oneSentencePlan} />
+          <div className="grid gap-4 lg:grid-cols-3">
+            <DailySection title="DAY TRADING" items={report.topDayTradeIdeas.map((idea) => `${idea.symbol} - ${idea.actionLabel}. ${idea.reason} Current: ${idea.current}. Entry: ${idea.entryZone}. Stop/invalidation: ${idea.stopInvalidation}. Target: ${idea.target}. Max paper risk: ${idea.maxPaperRisk}.`)} />
+            <DailySection title="LONG-TERM INVESTING" items={report.topLongTermIdeas.map((idea) => `${idea.symbol} - ${idea.label}. ${idea.thesis} Better entry: ${idea.betterEntryCondition}. DCA only: ${idea.dcaIdea}`)} />
+            <DailySection title="POLYMARKET" items={report.topPolymarketIdeas.map((idea) => `${idea.title} - ${idea.actionLabel}. YES: ${idea.yesPrice}. NO: ${idea.noPrice}. ${idea.yesMeans} ${idea.noMeans} Max risk: ${idea.suggestedMaxRisk}.`)} />
+          </div>
+          {report.topDayTradeIdeas[0] ? (
+            <div className="grid gap-4 lg:grid-cols-2">
+              <List title="Robinhood steps" items={report.topDayTradeIdeas[0].robinhoodSteps} />
+              <List title="Day-trade do not touch if" items={report.topDayTradeIdeas[0].doNotTouchIf} />
+              <List title="What to watch next" items={report.topDayTradeIdeas[0].watchNext} />
+            </div>
+          ) : null}
+          {report.topLongTermIdeas[0] ? <List title="Robinhood watchlist / DCA steps" items={report.topLongTermIdeas[0].robinhoodSteps} /> : null}
+          {report.topPolymarketIdeas[0] ? (
+            <div className="grid gap-4 lg:grid-cols-2">
+              <List title="Polymarket manual steps" items={report.topPolymarketIdeas[0].polymarketSteps} />
+              <List title="$50 compounding watch plan" items={report.topPolymarketIdeas[0].compoundingPlan} />
+            </div>
+          ) : null}
+          <List title="Polymarket Hourly Watchlist" items={report.hourlyPolymarketWatchlist.map((item) => `${item.marketTitle}: ${item.whyCheckThisHour} YES moves if: ${item.yesMover} NO moves if: ${item.noMover} Alert trigger: ${item.alertTrigger} ${item.riskNote}`)} />
+          <List title="Do not touch today" items={report.skippedAvoidList} />
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function DailySection({ title, items }: { title: string; items: string[] }) {
+  return <List title={title} items={items.length ? items : ["No ideas saved for this section yet."]} />;
+}
+
+function SavedReportsPanel({
+  savedReports,
+  loading,
+  onRefresh,
+  onSaveReport
+}: {
+  savedReports: SavedReportsResponse | null;
+  loading: boolean;
+  onRefresh: () => void;
+  onSaveReport: (reportType: "morning" | "midday" | "closing") => void;
+}) {
+  const reports = savedReports?.reports ?? [];
+  const byType = (type: SavedDailyReport["reportType"]) => reports.find((report) => report.reportType === type);
+  const visible = [byType("morning"), byType("midday"), byType("closing")].filter((report): report is SavedDailyReport => Boolean(report));
+
+  return (
+    <section className="grid gap-4">
+      <div className="flex flex-col gap-3 rounded-md border border-terminal-line bg-terminal-panel p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-white">Saved Reports</h2>
+          <p className="mt-1 text-sm text-terminal-muted">Morning Brief, Midday Update, and Closing Watchlist persisted with Telegram status.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={() => onSaveReport("morning")} disabled={loading} className="rounded-md border border-terminal-line px-3 py-2 text-sm text-terminal-muted hover:text-white disabled:opacity-60">Save Morning</button>
+          <button onClick={onRefresh} className="rounded-md border border-terminal-line px-3 py-2 text-sm text-terminal-muted hover:text-white">Refresh</button>
+        </div>
+      </div>
+      {savedReports?.warning ? <WarningList items={[savedReports.warning]} /> : null}
+      {!visible.length ? <EmptyState text="No saved reports yet. Use Save Morning or wait for a scheduled run." /> : null}
+      <div className="grid gap-4 lg:grid-cols-3">
+        {visible.map((report) => (
+          <article key={report.id} className="rounded-md border border-terminal-line bg-terminal-panel p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-lg font-semibold text-white">{report.title}</h3>
+              <span className={badgeClass(report.telegram.sent ? "green" : report.telegram.attempted ? "yellow" : "red")}>{report.telegram.sent ? "Telegram sent" : report.telegram.attempted ? "Telegram attempted" : "Telegram not attempted"}</span>
+            </div>
+            <p className="mt-2 text-sm text-terminal-muted">Last run: {new Date(report.timestamp).toLocaleString()}</p>
+            <p className="mt-2 text-sm text-terminal-muted">Cron: {report.schedule.configuredUtc}</p>
+            <WarningList items={[...report.telegram.warnings, ...report.errors, report.telegram.error].filter((item): item is string => Boolean(item))} />
+          </article>
+        ))}
+      </div>
+      {savedReports?.diagnostics ? <DiagnosticsPanel diagnostics={savedReports.diagnostics} /> : null}
+    </section>
+  );
+}
+
+function DiagnosticsPanel({ diagnostics }: { diagnostics: SavedReportsResponse["diagnostics"] }) {
+  return (
+    <div className="rounded-md border border-terminal-line bg-terminal-panel p-4">
+      <h2 className="text-lg font-semibold text-white">Why no alert?</h2>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <Info title="Last scheduled run" text={diagnostics.lastScheduledRun ?? "No saved scheduled run yet."} />
+        <Info title="Last Telegram attempt" text={diagnostics.lastTelegramAttempt ?? "No Telegram attempt recorded."} />
+        <Info title="Last Telegram error" text={diagnostics.lastTelegramError ?? "No Telegram error recorded."} />
+        <Info title="Last report saved" text={diagnostics.lastReportSavedTime ?? "No saved report yet."} />
+        <Info title="Current UTC time" text={diagnostics.currentUtcTime} />
+        <Info title="Expected next run" text={diagnostics.expectedNextRunTime} />
+      </div>
+      <p className="mt-4 text-sm text-terminal-muted">{diagnostics.dstNote}</p>
+    </div>
   );
 }
 
@@ -983,7 +1148,8 @@ function AlertsPanel({
   onSendTest,
   sendOpportunityTelegram,
   onToggleOpportunityTelegram,
-  opportunityAlertStatus
+  opportunityAlertStatus,
+  diagnostics
 }: {
   setup: SetupCheckResponse | null;
   result: AlertResponse | null;
@@ -992,6 +1158,7 @@ function AlertsPanel({
   sendOpportunityTelegram: boolean;
   onToggleOpportunityTelegram: (enabled: boolean) => void;
   opportunityAlertStatus: OpportunityAlertStatus;
+  diagnostics: SavedReportsResponse["diagnostics"] | null;
 }) {
   const configured = setup?.configured ?? {};
   const channels = {
@@ -1044,6 +1211,7 @@ function AlertsPanel({
           </div>
         ) : <EmptyState text="No alert has been tested in this browser session." />}
       </div>
+      {diagnostics ? <DiagnosticsPanel diagnostics={diagnostics} /> : null}
     </section>
   );
 }

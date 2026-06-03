@@ -1,21 +1,13 @@
 import type { Handler } from "@netlify/functions";
-import { sendAlert } from "../../lib/server/alerts";
+import { runScheduledDailyReport } from "../../lib/server/scheduled-report-runner";
 import { jsonResponse } from "../../lib/server/http";
-import { runOpportunityEngine } from "../../lib/server/opportunity-engine";
 
 export const config = {
+  // 3:30 PM ET = 20:30 UTC during EST, 19:30 UTC during EDT.
+  // Netlify cron is fixed UTC; current config follows 3:30 PM ET during EDT.
   schedule: "30 19 * * 1-5"
 };
 
 export const handler: Handler = async () => {
-  const engine = await runOpportunityEngine();
-  const report = engine.reports.find((item) => item.title === "Closing Watchlist") ?? engine.reports[2];
-  const alert = await sendAlert({
-    title: "Closing Watchlist",
-    message: [report.biggestRiskToday, ...report.whatToIgnore, "Research only. Manual review required."].join("\n"),
-    severity: "medium",
-    alertType: "closing report",
-    channels: ["telegram"]
-  });
-  return jsonResponse({ report, alert });
+  return jsonResponse(await runScheduledDailyReport("closing"));
 };
