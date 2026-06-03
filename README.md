@@ -1,21 +1,27 @@
-# Market Intelligence AI V2
+# Market Intelligence AI V3
 
-Market Intelligence AI is a research-only multi-market dashboard for stocks, ETFs, and Polymarket prediction markets. It scans public data, scores ideas, explains risk, tracks paper decisions, and builds a local learning loop.
+Market Intelligence AI is a research-only multi-market opportunity intelligence dashboard for stocks, ETFs, and Polymarket prediction markets. It scans public data, scores ideas, explains risk, generates briefings, tracks paper decisions, and builds a local learning loop.
 
 It is not an auto-trading bot, not financial advice, not gambling advice, and not a guaranteed-profit system.
 
-## What V2 Does
+## What V3 Does
 
 - Scans stocks and ETFs with Finnhub quotes/news and optional Polygon snapshots.
 - Scans active Polymarket events and markets with public Gamma API data.
 - Uses Polymarket Data API leaderboard data for Smart Money Watch context.
+- Uses public CLOB price history when token IDs and liquidity make it practical.
+- Creates a unified opportunity engine across stocks and Polymarket.
+- Detects biggest movers, high-volume markets, high-liquidity markets, near-resolution markets, strong catalysts, and cross-market hypotheses.
 - Scores stock setups and Polymarket opportunities with non-random formulas.
+- Classifies stock and Polymarket catalysts.
 - Flags ambiguous wording, thin liquidity, wide spread, resolution-source risk, binary news shock, crowded trade risk, manipulation/whale risk, and time/opportunity cost.
 - Builds research packets with YES/NO cases, consensus odds, resolution criteria, skip reasons, and invalidation.
+- Generates Morning Brief, Midday Update, Closing Watchlist, and Weekend Deep Dive report cards.
+- Adds Macro Risk Today and Earnings Watch placeholders for future provider integration.
 - Compares stock narratives with Polymarket themes as clearly marked hypotheses.
 - Tracks paper trades, skipped ideas, local outcomes, score buckets, market type, catalyst type, and failure reasons.
 - Stores a local research feed in browser localStorage.
-- Provides optional alert architecture for Telegram, email, and SMS.
+- Provides optional Telegram-first alert architecture, with email and SMS fallbacks.
 
 ## What It Does Not Do
 
@@ -36,6 +42,7 @@ V2 uses public endpoints documented by Polymarket:
 - Gamma API: `https://gamma-api.polymarket.com`
 - Data API: `https://data-api.polymarket.com`
 - CLOB public market data: `https://clob.polymarket.com`
+- CLOB price history: `https://clob.polymarket.com/prices-history`
 
 No Polymarket API key, wallet, or authentication is required for the V2 scanner. Trading endpoints are intentionally not used.
 
@@ -62,6 +69,24 @@ The Polymarket score is 0-100:
 - Crowd/top-trader signal: 10%
 
 If data is missing or the market has risk flags, confidence is lowered.
+
+## Unified Opportunity Fields
+
+Every unified V3 opportunity includes:
+
+- market type
+- title and symbol/slug
+- current stock price or Polymarket odds
+- score and score breakdown
+- catalyst type and source quality
+- bull/YES case and bear/NO case
+- trap risk
+- invalidation
+- what to monitor next
+- risk level
+- confidence and data confidence
+- suggested paper-trade action only
+- skip reason
 
 ## Environment Variables
 
@@ -122,6 +147,14 @@ curl -s -X POST http://localhost:8888/.netlify/functions/run-polymarket-scan
 
 This uses public Polymarket data and should work without keys if the public APIs are reachable.
 
+## Test Unified Opportunities
+
+```bash
+curl -s -X POST http://localhost:8888/.netlify/functions/run-opportunity-engine
+```
+
+If stock keys are missing, the engine still returns Polymarket opportunities and report cards while warning that stock scanning was skipped.
+
 ## Test Cross-Market Scan
 
 ```bash
@@ -135,7 +168,7 @@ If stock keys are missing, the function still returns Polymarket data and marks 
 ```bash
 curl -s -X POST http://localhost:8888/.netlify/functions/send-alert \
   -H "Content-Type: application/json" \
-  -d '{"title":"Test alert","message":"Research only. Manual review required.","severity":"medium"}'
+  -d '{"title":"Test alert","message":"Research only. Manual review required.","severity":"medium","alertType":"test","channels":["telegram"]}'
 ```
 
 Alerts only send through configured channels:
@@ -160,10 +193,13 @@ Alerts only send through configured channels:
 
 ## Netlify Scheduled Functions
 
-V2 includes:
+V3 includes:
 
 - `netlify/functions/scheduled-stock-scan.ts`
 - `netlify/functions/scheduled-polymarket-scan.ts`
+- `netlify/functions/scheduled-morning-brief.ts`
+- `netlify/functions/scheduled-midday-scan.ts`
+- `netlify/functions/scheduled-closing-watch.ts`
 
 Both use this UTC cron:
 
@@ -172,6 +208,31 @@ schedule: "30 12,16,19 * * 1-5"
 ```
 
 That approximates 8:30 AM, 12:30 PM, and 3:30 PM ET during Eastern Daylight Time. Adjust for EST/DST in Netlify if exact wall-clock timing matters.
+
+The V3 report schedules are:
+
+```ts
+scheduled-morning-brief: "30 12 * * 1-5"
+scheduled-midday-scan: "30 16 * * 1-5"
+scheduled-closing-watch: "30 19 * * 1-5"
+```
+
+These are UTC schedules and require DST review for exact ET behavior.
+
+## Macro And Earnings Placeholders
+
+The app includes lightweight static macro categories:
+
+- CPI
+- PPI
+- FOMC
+- Fed speeches
+- jobs report
+- GDP
+- treasury auctions
+- major earnings weeks
+
+Ticker-level earnings awareness is currently a provider placeholder. Finnhub earnings calendar can be wired once the active key/plan confirms access.
 
 ## Risk Rules
 

@@ -9,6 +9,25 @@ export type RegimeLabel =
 
 export type Confidence = "low" | "medium" | "high";
 export type MarketType = "stock" | "polymarket";
+export type CatalystType =
+  | "earnings"
+  | "analyst"
+  | "SEC filing"
+  | "macro"
+  | "AI/tech"
+  | "crypto-linked"
+  | "legal/regulatory"
+  | "product/news"
+  | "politics"
+  | "economics"
+  | "crypto"
+  | "sports"
+  | "tech"
+  | "weather"
+  | "culture"
+  | "finance"
+  | "geopolitical"
+  | "unknown";
 
 export type Quote = {
   ticker: string;
@@ -132,6 +151,7 @@ export type PolymarketOpportunity = {
   lastTradePrice: number | null;
   oneDayPriceChange: number | null;
   oneWeekPriceChange: number | null;
+  priceHistoryChange: number | null;
   volume: number;
   volume24hr: number;
   liquidity: number;
@@ -143,6 +163,7 @@ export type PolymarketOpportunity = {
   score: number;
   scoreBreakdown: PolymarketScoreBreakdown;
   confidence: Confidence;
+  dataConfidence: Confidence;
   riskLevel: RiskLevel;
   riskFlags: PolymarketRiskFlags;
   catalyst: string;
@@ -153,6 +174,74 @@ export type PolymarketOpportunity = {
   whatToMonitor: string[];
   whyToSkip: string;
   invalidation: string;
+  warnings: string[];
+};
+
+export type CatalystProfile = {
+  type: CatalystType;
+  sourceQuality: Confidence;
+  whyItMatters: string;
+  whatWouldMoveTheMarket: string[];
+  invalidation: string;
+};
+
+export type UnifiedOpportunity = {
+  id: string;
+  marketType: MarketType;
+  title: string;
+  symbol: string;
+  current: string;
+  score: number;
+  scoreBreakdown: Record<string, number>;
+  catalyst: CatalystProfile;
+  bullCase: string;
+  bearCase: string;
+  trap: string;
+  invalidation: string;
+  monitorNext: string[];
+  riskLevel: RiskLevel;
+  confidence: Confidence;
+  dataConfidence: Confidence;
+  suggestedPaperAction: string;
+  skipReason: string;
+  source: "stock-scan" | "polymarket-scan" | "cross-market" | "leaderboard";
+};
+
+export type MacroRiskEvent = {
+  category: "CPI" | "PPI" | "FOMC" | "Fed speeches" | "jobs report" | "GDP" | "treasury auctions" | "major earnings weeks";
+  whyItMatters: string;
+  monitor: string;
+};
+
+export type EarningsWatchItem = {
+  ticker: string;
+  status: "provider-needed" | "available";
+  note: string;
+};
+
+export type IntelligenceReport = {
+  id: string;
+  title: "Morning Brief" | "Midday Update" | "Closing Watchlist" | "Weekend Deep Dive";
+  generatedAt: string;
+  topStocks: UnifiedOpportunity[];
+  topPolymarket: UnifiedOpportunity[];
+  topCrossMarketInsight: CrossMarketInsight | null;
+  biggestRiskToday: string;
+  whatToIgnore: string[];
+  monitorNext: string[];
+  paperTradeIdeasOnly: string[];
+};
+
+export type OpportunityEngineResponse = {
+  generatedAt: string;
+  disclaimer: string;
+  opportunities: UnifiedOpportunity[];
+  stockScan: ScanResponse | null;
+  polymarketScan: PolymarketScanResponse;
+  crossMarketInsights: CrossMarketInsight[];
+  reports: IntelligenceReport[];
+  macroRiskToday: MacroRiskEvent[];
+  earningsWatch: EarningsWatchItem[];
   warnings: string[];
 };
 
@@ -204,6 +293,7 @@ export type AlertRequest = {
   title: string;
   message: string;
   severity?: RiskLevel;
+  alertType?: "high score opportunity" | "risk warning" | "morning brief" | "midday update" | "closing report" | "polymarket mover" | "stock mover" | "test";
   channels?: AlertChannel[];
 };
 

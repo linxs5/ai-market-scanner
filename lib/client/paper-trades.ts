@@ -136,6 +136,21 @@ export function analyzePaperTrades(trades: PaperTrade[]) {
     if (trade.failureReason) acc[trade.failureReason] = (acc[trade.failureReason] ?? 0) + 1;
     return acc;
   }, {});
+  const catalystPerformance = completed.reduce<Record<string, { total: number; wins: number }>>((acc, trade) => {
+    acc[trade.catalystType] = acc[trade.catalystType] ?? { total: 0, wins: 0 };
+    acc[trade.catalystType].total += 1;
+    if (trade.status === "win") acc[trade.catalystType].wins += 1;
+    return acc;
+  }, {});
+  const rankedCatalysts = Object.entries(catalystPerformance)
+    .map(([name, value]) => ({
+      name,
+      winRate: value.total ? Math.round((value.wins / value.total) * 100) : 0,
+      total: value.total
+    }))
+    .sort((a, b) => b.winRate - a.winRate || b.total - a.total);
+  const highConfidenceCompleted = completed.filter((trade) => trade.confidence === "high");
+  const highConfidenceLosses = highConfidenceCompleted.filter((trade) => trade.status === "loss");
 
   return {
     totalIdeas: trades.length,
@@ -153,7 +168,15 @@ export function analyzePaperTrades(trades: PaperTrade[]) {
       "85-100": bucket(85, 100)
     },
     catalystCounts,
+    winRateByCatalystType: Object.fromEntries(rankedCatalysts.map((item) => [item.name, item.winRate])),
+    bestPerformingCategory: rankedCatalysts[0]?.name ?? "n/a",
+    worstPerformingCategory: rankedCatalysts.at(-1)?.name ?? "n/a",
     commonFailureReasons: failureCounts,
+    mostCommonFailureReason: Object.entries(failureCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "n/a",
+    overconfidenceWarning:
+      highConfidenceCompleted.length >= 3 && highConfidenceLosses.length / highConfidenceCompleted.length > 0.5
+        ? "High-confidence ideas are losing more than half the time. Lower size, tighten filters, and review catalyst quality."
+        : "No overconfidence warning yet.",
     averageConfidenceWinners:
       wins.length === 0
         ? "n/a"

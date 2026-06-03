@@ -59,7 +59,8 @@ export async function sendAlert(request: AlertRequest): Promise<AlertResponse> {
   const attemptedChannels = requestedChannels.filter((channel) => configuredChannels[channel]);
   const deliveredChannels: AlertChannel[] = [];
   const warnings: string[] = [];
-  const message = `[${request.severity ?? "medium"}] ${request.title}\n\n${request.message}\n\nResearch only. No auto-trading. Manual review required.`;
+  const typeLabel = request.alertType ? ` · ${request.alertType}` : "";
+  const message = `[${request.severity ?? "medium"}${typeLabel}] ${request.title}\n\n${request.message}\n\nResearch only. No auto-trading. Manual review required.`;
 
   for (const channel of requestedChannels) {
     if (!configuredChannels[channel]) {

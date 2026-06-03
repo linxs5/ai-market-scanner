@@ -26,6 +26,9 @@ import { WATCHLIST } from "@/lib/shared/watchlist";
 import type {
   AlertResponse,
   CrossMarketInsight,
+  IntelligenceReport,
+  MacroRiskEvent,
+  OpportunityEngineResponse,
   PolymarketOpportunity,
   PolymarketScanResponse,
   ScanResponse,
@@ -46,9 +49,11 @@ import {
 } from "@/lib/client/paper-trades";
 
 type Tab =
+  | "Top Opportunities"
   | "Stock Scanner"
   | "Polymarket Scanner"
   | "Cross-Market Opportunities"
+  | "Reports"
   | "Alerts"
   | "Paper Trades"
   | "Research Feed"
@@ -64,9 +69,11 @@ type CrossMarketResponse = {
 };
 
 const tabs: Tab[] = [
+  "Top Opportunities",
   "Stock Scanner",
   "Polymarket Scanner",
   "Cross-Market Opportunities",
+  "Reports",
   "Alerts",
   "Paper Trades",
   "Research Feed",
@@ -105,14 +112,15 @@ function formatMoney(value: number) {
 }
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<Tab>("Stock Scanner");
+  const [activeTab, setActiveTab] = useState<Tab>("Top Opportunities");
+  const [engine, setEngine] = useState<OpportunityEngineResponse | null>(null);
   const [stockScan, setStockScan] = useState<ScanResponse | null>(null);
   const [polyScan, setPolyScan] = useState<PolymarketScanResponse | null>(null);
   const [crossMarket, setCrossMarket] = useState<CrossMarketResponse | null>(null);
   const [setup, setSetup] = useState<SetupCheckResponse | null>(null);
   const [paperTrades, setPaperTrades] = useState<PaperTrade[]>(loadPaperTrades);
   const [feed, setFeed] = useState<ResearchFeedItem[]>(loadResearchFeed);
-  const [loading, setLoading] = useState<"stock" | "polymarket" | "cross" | "alert" | null>(null);
+  const [loading, setLoading] = useState<"stock" | "polymarket" | "cross" | "alert" | "opportunity" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [alertResult, setAlertResult] = useState<AlertResponse | null>(null);
 
@@ -195,6 +203,43 @@ export default function Home() {
     }
   }
 
+  async function runOpportunityEngineNow() {
+    setLoading("opportunity");
+    setError(null);
+    setActiveTab("Top Opportunities");
+    try {
+      const response = await fetch("/.netlify/functions/run-opportunity-engine", { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? "Opportunity engine failed.");
+      const result = payload as OpportunityEngineResponse;
+      setEngine(result);
+      setStockScan(result.stockScan);
+      setPolyScan(result.polymarketScan);
+      setCrossMarket({
+        generatedAt: result.generatedAt,
+        stockScan: result.stockScan,
+        stockError: result.stockScan ? null : result.warnings.find((warning) => warning.includes("Stock opportunity scan skipped")) ?? null,
+        polymarketScan: result.polymarketScan,
+        insights: result.crossMarketInsights
+      });
+      result.opportunities.slice(0, 12).forEach((opportunity) =>
+        addFeedItem({
+          source: opportunity.marketType,
+          symbol: opportunity.symbol,
+          score: opportunity.score,
+          summary: `${opportunity.title}: ${opportunity.catalyst.whyItMatters}`,
+          status: "generated",
+          paperTradeAction: "none",
+          followUpNeeded: opportunity.monitorNext[0] ?? opportunity.invalidation
+        })
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Opportunity engine failed.");
+    } finally {
+      setLoading(null);
+    }
+  }
+
   async function runPolymarketScanNow() {
     setLoading("polymarket");
     setError(null);
@@ -249,7 +294,9 @@ export default function Home() {
         body: JSON.stringify({
           title: "Market Intelligence AI test alert",
           message: "This is a configured-channel test. Research only; no auto-trading.",
-          severity: "medium"
+          severity: "medium",
+          alertType: "test",
+          channels: ["telegram", "email", "sms"]
         })
       });
       const payload = await response.json();
@@ -304,7 +351,7 @@ export default function Home() {
             </p>
           </div>
           <div className="grid gap-2 sm:grid-cols-3">
-            <ActionButton onClick={runStockScan} loading={loading === "stock"} label="Stock Scan" />
+            <ActionButton onClick={runOpportunityEngineNow} loading={loading === "opportunity"} label="Opportunities" />
             <ActionButton onClick={runPolymarketScanNow} loading={loading === "polymarket"} label="Polymarket" />
             <ActionButton onClick={runCrossMarket} loading={loading === "cross"} label="Cross-Market" />
           </div>
@@ -328,6 +375,9 @@ export default function Home() {
 
         {error ? <ErrorBanner message={error} /> : null}
 
+        {activeTab === "Top Opportunities" ? (
+          <TopOpportunitiesPanel engine={engine} loading={loading === "opportunity"} onRun={runOpportunityEngineNow} />
+        ) : null}
         {activeTab === "Stock Scanner" ? (
           <StockScanner scan={stockScan} loading={loading === "stock"} onRun={runStockScan} onPaperTrade={addStockTrade} setup={setup} />
         ) : null}
@@ -336,6 +386,9 @@ export default function Home() {
         ) : null}
         {activeTab === "Cross-Market Opportunities" ? (
           <CrossMarketPanel crossMarket={crossMarket} loading={loading === "cross"} onRun={runCrossMarket} />
+        ) : null}
+        {activeTab === "Reports" ? (
+          <ReportsPanel engine={engine} loading={loading === "opportunity"} onRun={runOpportunityEngineNow} />
         ) : null}
         {activeTab === "Alerts" ? (
           <AlertsPanel setup={setup} result={alertResult} loading={loading === "alert"} onSendTest={sendTestAlert} />
@@ -378,6 +431,109 @@ function ErrorBanner({ message }: { message: string }) {
     <div className="rounded-md border border-terminal-red/40 bg-terminal-red/10 p-4 text-sm text-terminal-red">
       <div className="flex items-center gap-2 font-semibold"><AlertTriangle className="h-4 w-4" />{message}</div>
       <p className="mt-2 text-terminal-muted">Check Setup for required keys and remember Polymarket public data needs no key.</p>
+    </div>
+  );
+}
+
+function TopOpportunitiesPanel({ engine, loading, onRun }: { engine: OpportunityEngineResponse | null; loading: boolean; onRun: () => void }) {
+  const top = engine?.opportunities.slice(0, 10) ?? [];
+  return (
+    <section className="grid gap-4">
+      <div className="grid gap-4 lg:grid-cols-4">
+        <Metric icon={<Sparkles />} label="Top opportunities" value={String(top.length)} />
+        <Metric icon={<Gauge />} label="Best score" value={String(top[0]?.score ?? 0)} />
+        <Metric icon={<Brain />} label="Data confidence" value={top[0]?.dataConfidence ?? "Run engine"} />
+        <Metric icon={<ShieldAlert />} label="Research mode" value="Manual only" />
+      </div>
+      <ScannerHeader title="Opportunity intelligence engine" subtitle="Unifies stock movers, Polymarket movers, catalysts, macro risk, reports, and cross-market hypotheses." onRun={onRun} loading={loading} />
+      {loading ? <LoadingState text="Ranking stock and Polymarket research opportunities..." /> : null}
+      {!loading && !engine ? <EmptyState text="Run the opportunity engine to rank multi-market research ideas." /> : null}
+      {engine ? <WarningList items={engine.warnings} /> : null}
+      <div className="grid gap-4">
+        {top.map((opportunity) => (
+          <article key={opportunity.id} className="rounded-md border border-terminal-line bg-terminal-panel p-4 shadow-glow">
+            <CardTop title={opportunity.title} score={opportunity.score} risk={opportunity.riskLevel} confidence={opportunity.confidence} />
+            <div className="mt-3 flex flex-wrap gap-2">
+              <span className={badgeClass(opportunity.marketType === "stock" ? "blue" : "green")}>{opportunity.marketType}</span>
+              <span className={badgeClass(opportunity.dataConfidence === "high" ? "green" : opportunity.dataConfidence === "medium" ? "yellow" : "red")}>data {opportunity.dataConfidence}</span>
+              <span className={badgeClass("yellow")}>Why skip this?</span>
+            </div>
+            <p className="mt-3 text-sm text-terminal-muted">{opportunity.current}</p>
+            <BreakdownGrid items={opportunity.scoreBreakdown} />
+            <div className="mt-4 grid gap-4 lg:grid-cols-2">
+              <Info title={`Catalyst: ${opportunity.catalyst.type}`} text={opportunity.catalyst.whyItMatters} />
+              <Info title="Bull / YES case" text={opportunity.bullCase} />
+              <Info title="Bear / NO case" text={opportunity.bearCase} />
+              <Info title="Why it might be a trap" text={opportunity.trap} />
+              <Info title="Invalidation" text={opportunity.invalidation} />
+              <Info title="Suggested paper action" text={opportunity.suggestedPaperAction} />
+            </div>
+            <List title="Monitor next" items={opportunity.monitorNext} />
+            <WarningList items={[opportunity.skipReason]} />
+          </article>
+        ))}
+      </div>
+      {engine ? <MacroRiskPanel items={engine.macroRiskToday} /> : null}
+      {engine ? <EarningsWatchPanel items={engine.earningsWatch.slice(0, 8)} /> : null}
+    </section>
+  );
+}
+
+function ReportsPanel({ engine, loading, onRun }: { engine: OpportunityEngineResponse | null; loading: boolean; onRun: () => void }) {
+  return (
+    <section className="grid gap-4">
+      <ScannerHeader title="Morning / midday / closing reports" subtitle="Server-generated summaries from the unified opportunity engine. Paper-trade ideas only." onRun={onRun} loading={loading} />
+      {loading ? <LoadingState text="Generating report cards..." /> : null}
+      {!loading && !engine ? <EmptyState text="Run the opportunity engine to generate report cards." /> : null}
+      {engine?.reports.map((report) => <ReportCard key={report.id} report={report} />)}
+    </section>
+  );
+}
+
+function ReportCard({ report }: { report: IntelligenceReport }) {
+  return (
+    <article className="rounded-md border border-terminal-line bg-terminal-panel p-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <h2 className="text-lg font-semibold text-white">{report.title}</h2>
+        <span className={badgeClass("blue")}>{new Date(report.generatedAt).toLocaleString()}</span>
+      </div>
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <List title="Top stock setups" items={report.topStocks.map((item) => `${item.symbol}: score ${item.score}, ${item.catalyst.type}`)} />
+        <List title="Top Polymarket setups" items={report.topPolymarket.map((item) => `${item.symbol}: score ${item.score}, ${item.catalyst.type}`)} />
+        <Info title="Biggest risk today" text={report.biggestRiskToday} />
+        <List title="What to ignore" items={report.whatToIgnore} />
+        <List title="Monitor next" items={report.monitorNext} />
+        <List title="Paper-trade ideas only" items={report.paperTradeIdeasOnly} />
+      </div>
+    </article>
+  );
+}
+
+function MacroRiskPanel({ items }: { items: MacroRiskEvent[] }) {
+  return (
+    <div className="rounded-md border border-terminal-line bg-terminal-panel p-4">
+      <h2 className="text-lg font-semibold text-white">Macro Risk Today</h2>
+      <div className="mt-4 grid gap-3 lg:grid-cols-3">
+        {items.map((item) => (
+          <div key={item.category} className="rounded-md border border-terminal-line bg-terminal-ink/60 p-3">
+            <span className={badgeClass("yellow")}>{item.category}</span>
+            <p className="mt-3 text-sm text-terminal-muted">{item.whyItMatters}</p>
+            <p className="mt-2 text-sm text-terminal-amber">{item.monitor}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EarningsWatchPanel({ items }: { items: { ticker: string; status: string; note: string }[] }) {
+  return (
+    <div className="rounded-md border border-terminal-line bg-terminal-panel p-4">
+      <h2 className="text-lg font-semibold text-white">Earnings Watch</h2>
+      <p className="mt-2 text-sm text-terminal-muted">Placeholder until earnings-calendar provider support is enabled.</p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {items.map((item) => <span key={item.ticker} className={badgeClass("yellow")}>{item.ticker}: {item.status}</span>)}
+      </div>
     </div>
   );
 }
@@ -569,7 +725,7 @@ function AlertsPanel({ setup, result, loading, onSendTest }: { setup: SetupCheck
     <section className="grid gap-4 lg:grid-cols-2">
       <div className="rounded-md border border-terminal-line bg-terminal-panel p-4">
         <h2 className="flex items-center gap-2 text-lg font-semibold text-white"><Bell className="h-5 w-5 text-terminal-cyan" /> Alert architecture</h2>
-        <p className="mt-2 text-sm text-terminal-muted">Alerts are optional and only send when channel env vars are configured. Triggers include stock score &gt; 75, Polymarket score &gt; 75, odds moves, volume spikes, top trader activity, catalysts, risk warnings, and scheduled reports.</p>
+        <p className="mt-2 text-sm text-terminal-muted">Telegram is the preferred V3 channel. Alerts only send when channel env vars are configured. Triggers include high-score opportunities, risk warnings, morning brief, midday update, closing report, Polymarket movers, and stock movers.</p>
         <div className="mt-4 grid gap-2">
           {Object.entries(channels).map(([channel, ready]) => (
             <div key={channel} className="flex items-center justify-between rounded-md border border-terminal-line bg-terminal-ink/60 p-3">
@@ -577,6 +733,11 @@ function AlertsPanel({ setup, result, loading, onSendTest }: { setup: SetupCheck
               <span className={badgeClass(ready ? "green" : "yellow")}>{ready ? "Configured" : "Optional missing"}</span>
             </div>
           ))}
+        </div>
+        <div className="mt-4 rounded-md border border-terminal-line bg-terminal-ink/60 p-3">
+          <h3 className="font-semibold text-white">Alert preview</h3>
+          <p className="mt-2 text-sm text-terminal-muted">[medium · test] Market Intelligence AI test alert</p>
+          <p className="mt-1 text-sm text-terminal-muted">Research only. No auto-trading. Manual review required.</p>
         </div>
         <button onClick={onSendTest} disabled={loading} className="mt-4 inline-flex items-center gap-2 rounded-md bg-terminal-cyan px-3 py-2 text-sm font-bold text-terminal-ink disabled:opacity-60">{loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bell className="h-4 w-4" />} Send test alert</button>
       </div>
@@ -608,7 +769,13 @@ function PaperTradesPanel({ trades, analytics, onOutcome }: { trades: PaperTrade
         <div className="mt-4 grid gap-3 sm:grid-cols-3">
           {Object.entries(analytics.winRateByScoreBucket).map(([bucket, value]) => <Metric key={bucket} icon={<Gauge />} label={`Score ${bucket}`} value={`${value}%`} />)}
         </div>
-        <p className="mt-4 text-sm text-terminal-muted">Best/worst catalyst and failure analytics are tracked locally from your marked outcomes and notes. Supabase can replace this storage later.</p>
+        <div className="mt-4 grid gap-4 lg:grid-cols-3">
+          <Info title="Best category" text={analytics.bestPerformingCategory} />
+          <Info title="Worst category" text={analytics.worstPerformingCategory} />
+          <Info title="Most common failure" text={analytics.mostCommonFailureReason} />
+        </div>
+        <p className="mt-4 text-sm text-terminal-amber">{analytics.overconfidenceWarning}</p>
+        <p className="mt-2 text-sm text-terminal-muted">All analytics are localStorage-only for now. Supabase can replace this storage later.</p>
       </div>
       <div className="grid gap-3">
         {trades.length ? trades.map((trade) => (
@@ -675,6 +842,16 @@ function SetupPanel({ setup, onRefresh }: { setup: SetupCheckResponse | null; on
             <span className={badgeClass(value ? "green" : "red")}>{value ? "Public / no key" : "Unavailable"}</span>
           </div>
         ))}
+      </div>
+      <div className="rounded-md border border-terminal-line bg-terminal-panel p-4">
+        <h2 className="text-lg font-semibold text-white">Telegram setup steps</h2>
+        <ol className="mt-4 grid gap-2 text-sm text-terminal-muted">
+          <li>1. Create a Telegram bot with BotFather.</li>
+          <li>2. Send a message to the bot from the target chat.</li>
+          <li>3. Get the chat id from Telegram bot updates.</li>
+          <li>4. Add `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in Netlify env vars.</li>
+          <li>5. Click the test alert button in the Alerts tab.</li>
+        </ol>
       </div>
     </section>
   );

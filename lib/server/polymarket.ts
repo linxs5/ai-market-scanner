@@ -59,6 +59,10 @@ type GammaMarket = {
   clobTokenIds?: string;
 };
 
+type PriceHistoryResponse = {
+  history?: Array<{ t?: number; p?: number }>;
+};
+
 type LeaderboardRow = {
   rank?: string;
   proxyWallet?: string;
@@ -108,6 +112,28 @@ async function fetchJson<T>(url: string): Promise<T> {
   return (await response.json()) as T;
 }
 
+async function fetchPriceHistoryChange(market: GammaMarket): Promise<number | null> {
+  const liquidity = toNumber(market.liquidityClob ?? market.liquidityNum ?? market.liquidity);
+  const volume24hr = toNumber(market.volume24hrClob ?? market.volume24hr);
+  if (liquidity < 1_000 && volume24hr < 500) return null;
+
+  const tokenIds = parseJsonArray<string>(market.clobTokenIds, []);
+  const tokenId = tokenIds[0];
+  if (!tokenId) return null;
+
+  try {
+    const params = new URLSearchParams({ market: tokenId, interval: "1d", fidelity: "60" });
+    const response = await fetchJson<PriceHistoryResponse>(`https://clob.polymarket.com/prices-history?${params.toString()}`);
+    const history = response.history?.filter((point) => Number.isFinite(point.p)) ?? [];
+    if (history.length < 2) return null;
+    const first = Number(history[0].p);
+    const last = Number(history[history.length - 1].p);
+    return Number.isFinite(first) && Number.isFinite(last) ? round(last - first) : null;
+  } catch {
+    return null;
+  }
+}
+
 function detectCatalystStrength(text: string, volume24hr: number, oneDayMove: number | null) {
   const catalystWords = [
     "election",
@@ -151,7 +177,7 @@ function probableTrap(flags: Omit<PolymarketRiskFlags, "probableTrap">, yesPrice
   return "The trap is following a popular narrative without a clean resolution source and fresh catalyst.";
 }
 
-function scoreMarket(event: GammaEvent, market: GammaMarket, smartMoneyAvailable: boolean): PolymarketOpportunity {
+async function scoreMarket(event: GammaEvent, market: GammaMarket, smartMoneyAvailable: boolean): Promise<PolymarketOpportunity> {
   const outcomes = parseJsonArray<string>(market.outcomes, ["Yes", "No"]);
   const outcomePrices = parseJsonArray<string | number>(market.outcomePrices, []).map((price) => toNumber(price, 0));
   const yesPrice = outcomePrices[0] ?? null;
@@ -163,6 +189,7 @@ function scoreMarket(event: GammaEvent, market: GammaMarket, smartMoneyAvailable
   const spread = market.spread === undefined ? null : toNumber(market.spread);
   const oneDayPriceChange = market.oneDayPriceChange === undefined ? null : toNumber(market.oneDayPriceChange);
   const oneWeekPriceChange = market.oneWeekPriceChange === undefined ? null : toNumber(market.oneWeekPriceChange);
+  const priceHistoryChange = await fetchPriceHistoryChange(market);
   const bestBid = market.bestBid === undefined ? null : toNumber(market.bestBid);
   const bestAsk = market.bestAsk === undefined ? null : toNumber(market.bestAsk);
   const lastTradePrice = market.lastTradePrice === undefined ? null : toNumber(market.lastTradePrice);
@@ -173,7 +200,12 @@ function scoreMarket(event: GammaEvent, market: GammaMarket, smartMoneyAvailable
   const competitiveOdds = yesPrice !== null ? 100 - Math.abs(yesPrice - 0.5) * 200 : 35;
 
   const liquidityVolume = clamp(Math.log10(volume + liquidity + 1) * 16);
-  const oddsMomentum = clamp(Math.abs(oneDayPriceChange ?? 0) * 320 + Math.abs(oneWeekPriceChange ?? 0) * 120 + competitiveOdds * 0.25);
+  const oddsMomentum = clamp(
+    Math.abs(oneDayPriceChange ?? 0) * 260 +
+      Math.abs(oneWeekPriceChange ?? 0) * 100 +
+      Math.abs(priceHistoryChange ?? 0) * 320 +
+      competitiveOdds * 0.25
+  );
   const catalystStrength = detectCatalystStrength(text, volume24hr, oneDayPriceChange);
   const clarity = resolutionClarity(description, resolutionSource);
   const timeAttractiveness =
@@ -229,7 +261,9 @@ function scoreMarket(event: GammaEvent, market: GammaMarket, smartMoneyAvailable
   if (ambiguousWording) warnings.push("Wording may depend on judgment or credible-reporting consensus.");
   if (market.umaResolutionStatus) warnings.push(`UMA status: ${market.umaResolutionStatus}.`);
 
-  const confidence: Confidence = score >= 75 && riskCount <= 2 ? "high" : score >= 60 && riskCount <= 4 ? "medium" : "low";
+  const missingDataPoints = [yesPrice, noPrice, spread, oneDayPriceChange, priceHistoryChange].filter((value) => value === null).length;
+  const confidence: Confidence = score >= 75 && riskCount <= 2 && missingDataPoints <= 1 ? "high" : score >= 58 && riskCount <= 5 ? "medium" : "low";
+  const dataConfidence: Confidence = missingDataPoints <= 1 ? "high" : missingDataPoints <= 3 ? "medium" : "low";
   const riskLevel = riskCount >= 5 || thinLiquidity || wideSpread ? "high" : riskCount >= 3 ? "medium" : "low";
   const category = event.tags?.[0]?.label || "Prediction market";
   const currentConsensus =
@@ -254,6 +288,7 @@ function scoreMarket(event: GammaEvent, market: GammaMarket, smartMoneyAvailable
     lastTradePrice,
     oneDayPriceChange,
     oneWeekPriceChange,
+    priceHistoryChange,
     volume,
     volume24hr,
     liquidity,
@@ -265,6 +300,7 @@ function scoreMarket(event: GammaEvent, market: GammaMarket, smartMoneyAvailable
     score,
     scoreBreakdown: breakdown,
     confidence,
+    dataConfidence,
     riskLevel,
     riskFlags,
     catalyst: catalystStrength >= 55 ? "High public activity and/or catalyst language detected." : "No strong external catalyst detected from metadata alone.",
@@ -347,25 +383,33 @@ export async function runPolymarketScan(): Promise<PolymarketScanResponse> {
 
   try {
     events = await fetchJson<GammaEvent[]>(
-      `${GAMMA_BASE_URL}/events?active=true&closed=false&order=volume_24hr&ascending=false&limit=100`
+      `${GAMMA_BASE_URL}/events?active=true&closed=false&order=volume_24hr&ascending=false&limit=50`
     );
   } catch (error) {
     warnings.push(error instanceof Error ? error.message : "Polymarket event fetch failed.");
   }
 
-  const allActive = events.flatMap((event) =>
-    (event.markets ?? [])
-      .filter((market) => market.active === true && market.closed !== true && market.archived !== true)
-      .map((market) => scoreMarket(event, market, smartMoney.traders.length > 0))
+  const allActive = (
+    await Promise.all(
+      events.flatMap((event) =>
+        (event.markets ?? [])
+          .filter((market) => market.active === true && market.closed !== true && market.archived !== true)
+          .map((market) => scoreMarket(event, market, smartMoney.traders.length > 0))
+      )
+    )
   );
-  const scored = events.flatMap((event) =>
-    (event.markets ?? [])
-      .filter(isTradableMarket)
-      .map((market) => scoreMarket(event, market, smartMoney.traders.length > 0))
+  const scored = (
+    await Promise.all(
+      events.flatMap((event) =>
+        (event.markets ?? [])
+          .filter(isTradableMarket)
+          .map((market) => scoreMarket(event, market, smartMoney.traders.length > 0))
+      )
+    )
   );
 
   const opportunities = scored
-    .filter((market) => market.score >= 55 && market.liquidity >= 500 && market.volume24hr >= 50 && !market.riskFlags.resolutionSourceRisk)
+    .filter((market) => market.score >= 45 && market.liquidity >= 250 && market.volume24hr >= 25)
     .sort((a, b) => b.score - a.score)
     .slice(0, 12);
 

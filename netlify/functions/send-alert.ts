@@ -7,6 +7,9 @@ const requestSchema = z.object({
   title: z.string().min(1).max(120),
   message: z.string().min(1).max(2000),
   severity: z.enum(["low", "medium", "high"]).optional(),
+  alertType: z
+    .enum(["high score opportunity", "risk warning", "morning brief", "midday update", "closing report", "polymarket mover", "stock mover", "test"])
+    .optional(),
   channels: z.array(z.enum(["sms", "telegram", "email"])).optional()
 });
 
