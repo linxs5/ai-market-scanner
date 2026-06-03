@@ -862,7 +862,16 @@ export default function Home() {
           <PaperTradesPanel trades={paperTrades} analytics={analytics} storageStatus={paperTradeStorage} onOutcome={updateOutcome} />
         ) : null}
         {activeTab === "Research Feed" ? <ResearchFeedPanel feed={feed} /> : null}
-        {activeTab === "Setup" ? <SetupPanel setup={setup} onRefresh={checkSetup} /> : null}
+        {activeTab === "Setup" ? (
+          <SetupPanel
+            setup={setup}
+            blobDiagnostics={blobDiagnostics}
+            scheduleDiagnostics={scheduleDiagnostics}
+            savedReports={savedReports}
+            onRefresh={checkSetup}
+            onRunDiagnostics={runDiagnostics}
+          />
+        ) : null}
         {activeTab === "Rules / Education" ? <Rules /> : null}
       </div>
     </main>
@@ -1640,15 +1649,33 @@ function ResearchFeedPanel({ feed }: { feed: ResearchFeedItem[] }) {
   );
 }
 
-function SetupPanel({ setup, onRefresh }: { setup: SetupCheckResponse | null; onRefresh: () => void }) {
+function SetupPanel({
+  setup,
+  blobDiagnostics,
+  scheduleDiagnostics,
+  savedReports,
+  onRefresh,
+  onRunDiagnostics
+}: {
+  setup: SetupCheckResponse | null;
+  blobDiagnostics: BlobDiagnostics | null;
+  scheduleDiagnostics: ScheduleDiagnosticsRecord | null;
+  savedReports: SavedReportsResponse | null;
+  onRefresh: () => void;
+  onRunDiagnostics: () => void;
+}) {
   const configured = setup?.configured ? Object.entries(setup.configured) : [];
   const publicApis = setup?.publicApis ? Object.entries(setup.publicApis) : [];
   return (
     <section className="grid gap-4">
       <div className="flex items-center justify-between rounded-md border border-terminal-line bg-terminal-panel p-4">
         <h2 className="text-lg font-semibold text-white">Environment setup</h2>
-        <button onClick={onRefresh} className="rounded-md border border-terminal-line px-3 py-2 text-sm text-terminal-muted hover:text-white">Refresh</button>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={onRunDiagnostics} className="rounded-md border border-terminal-line px-3 py-2 text-sm text-terminal-muted hover:text-white">Run diagnostics</button>
+          <button onClick={onRefresh} className="rounded-md border border-terminal-line px-3 py-2 text-sm text-terminal-muted hover:text-white">Refresh</button>
+        </div>
       </div>
+      <StorageDiagnosticsPanel blobDiagnostics={blobDiagnostics} scheduleDiagnostics={scheduleDiagnostics} savedReports={savedReports} />
       <div className="grid gap-3 sm:grid-cols-2">
         {configured.map(([key, value]) => (
           <div key={key} className="flex items-center justify-between rounded-md border border-terminal-line bg-terminal-panel p-3">
