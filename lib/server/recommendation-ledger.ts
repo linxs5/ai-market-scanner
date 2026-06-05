@@ -35,6 +35,188 @@ function scoreBucket(score: number) {
   return "0-54";
 }
 
+function numberFromText(value: string) {
+  const match = value.match(/([0-9]+(?:\.[0-9]+)?)/);
+  return match ? Number(match[1]) : null;
+}
+
+function hasClearText(value: string) {
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 8 && !["n/a", "unknown", "none"].includes(normalized);
+}
+
+function expiryFor(category: RecommendationLedgerItem["tradeCategory"], createdAt: string) {
+  const created = new Date(createdAt).getTime();
+  const days = category === "DAY_TRADE" ? 1 : category === "POLYMARKET" ? 7 : 30;
+  return new Date(created + days * 86_400_000).toISOString();
+}
+
+function buildDirectExecutionPlan(
+  opportunity: UnifiedOpportunity,
+  tradeCategory: RecommendationLedgerItem["tradeCategory"],
+  recommendation: RecommendationLedgerItem["recommendation"]
+): RecommendationLedgerItem["directExecutionPlan"] {
+  const isPoly = opportunity.marketType === "polymarket";
+  const label =
+    recommendation === "AVOID"
+      ? "AVOID"
+      : recommendation === "SKIP"
+        ? "SKIP"
+        : isPoly
+          ? "POLYMARKET BINARY RISK"
+          : recommendation === "PAPER_TRADE"
+            ? "PAPER EXECUTION CANDIDATE"
+            : "WATCH ONLY";
+  const direction = recommendation === "PAPER_YES" ? "PAPER YES" : recommendation === "PAPER_NO" ? "PAPER NO" : recommendation === "PAPER_TRADE" ? "LONG WATCH" : "WATCH";
+
+  return {
+    label,
+    category: isPoly ? "POLYMARKET" : tradeCategory === "LONG_TERM" ? "LONG-TERM INVESTING" : "DAY TRADE - SHARES",
+    direction,
+    currentPriceOrOdds: opportunity.current,
+    entryZone: opportunity.actionPlan.manualChecklist.find((item) => item.toLowerCase().includes("entry") || item.toLowerCase().includes("price")) ?? opportunity.current,
+    stopOrInvalidation: opportunity.invalidation,
+    target1: opportunity.actionPlan.whenToExit,
+    target2: opportunity.bullCase,
+    maxPaperRisk: "$2-$5",
+    suggestedPaperPositionSize: opportunity.actionPlan.suggestedPaperPositionSize,
+    timeHorizon: tradeCategory === "DAY_TRADE" ? "Same day. Expire this idea by the close unless the trigger is active." : tradeCategory === "POLYMARKET" ? "Until the catalyst/news resolves or odds move against the thesis." : "Weeks to months. Watchlist or small DCA only.",
+    plainEnglish: opportunity.actionPlan.plainEnglish.whatThisMeans,
+    robinhoodSteps: isPoly
+      ? []
+      : tradeCategory === "LONG_TERM"
+        ? [
+            "Open Robinhood.",
+            `Search ${opportunity.symbol}.`,
+            "Add it to your watchlist first.",
+            "Read the latest news.",
+            "If buying manually, use Dollars/Fractional Share.",
+            "Use small size.",
+            "Do not buy just because of one alert."
+          ]
+        : [
+            "Open Robinhood.",
+            "Tap Search.",
+            `Type ${opportunity.symbol}.`,
+            "Tap the correct stock/ETF.",
+            "Tap Trade.",
+            "Tap Buy.",
+            "Choose Dollars or Shares.",
+            "Choose Limit Order, not Market Order.",
+            "Enter the limit price from the entry zone.",
+            "Review estimated cost.",
+            "Do not submit if price moved outside the entry zone.",
+            "If paper trading, click 'I entered this' in the app.",
+            "If the invalidation level breaks, exit manually or use a stop/stop-limit if available.",
+            "If target hits, take profit or mark target hit in the app."
+          ],
+    polymarketSteps: isPoly
+      ? [
+          "Open Polymarket.",
+          `Search exact market title: ${opportunity.title}.`,
+          "Open the market.",
+          "Read rules/resolution criteria.",
+          "Check YES price and NO price.",
+          "Compare to the app price.",
+          "If odds moved too far, skip.",
+          "Check volume/liquidity.",
+          "If paper trading, click 'I entered this' in this app.",
+          "If real trading manually, risk only the stated amount.",
+          "Take profit if odds move in your favor.",
+          "Exit/avoid if thesis breaks."
+        ]
+      : [],
+    optionsUnavailableMessage: "Options Watch unavailable - options chain data source not connected.",
+    warnings: [
+      isPoly ? "Prediction markets are binary. If the side loses, the full paper stake can go to zero." : "No market orders. Use a limit order only if manually trading.",
+      "Manual approval only. No real auto-trading."
+    ]
+  };
+}
+
+function executionReadinessFor(item: Pick<RecommendationLedgerItem, "tradeCategory" | "marketType" | "recommendation" | "entryZone" | "stopOrInvalidation" | "target1" | "currentPriceOrOddsAtRecommendation" | "confidence" | "riskLevel" | "whySkip" | "sourceDataUsed" | "directExecutionPlan">): Pick<
+  RecommendationLedgerItem,
+  "executionReadinessScore" | "autoPaperEligible" | "reasonNotEligible" | "executionPlanQuality"
+> {
+  const reasons: string[] = [];
+  let score = 0;
+  const entry = hasClearText(item.entryZone);
+  const stop = hasClearText(item.stopOrInvalidation);
+  const target = hasClearText(item.target1);
+  const entryNumber = numberFromText(item.entryZone);
+  const stopNumber = numberFromText(item.stopOrInvalidation);
+  const targetNumber = numberFromText(item.target1);
+  const riskRewardOk = entryNumber !== null && stopNumber !== null && targetNumber !== null ? Math.abs(targetNumber - entryNumber) >= Math.abs(entryNumber - stopNumber) : target;
+  const confidenceOk = item.confidence === "high" || (item.confidence === "medium" && item.riskLevel !== "high");
+  const actionable = !["SKIP", "AVOID", "WATCH"].includes(item.recommendation);
+  const notOverextended = !/(ran too far|overextended|already moved|chase)/i.test(item.whySkip);
+  const liquidityOk = !/(low liquidity|thin liquidity|wide spread)/i.test(item.whySkip);
+  const dataFresh = item.sourceDataUsed.includes("opportunity-engine") || item.sourceDataUsed.includes("saved-report");
+  const rulesClear = item.marketType !== "polymarket" || !/(unclear|ambiguous|vague)/i.test(`${item.whySkip} ${item.stopOrInvalidation}`);
+
+  if (entry) score += 15;
+  else reasons.push("No clear entry zone.");
+  if (stop) score += 15;
+  else reasons.push("No clear stop/invalidation.");
+  if (target) score += 15;
+  else reasons.push("No clear target.");
+  if (riskRewardOk) score += 15;
+  else reasons.push("Risk/reward is not clear enough.");
+  if (confidenceOk) score += 15;
+  else reasons.push("Confidence is below the auto-paper threshold.");
+  if (dataFresh) score += 10;
+  else reasons.push("Data freshness is not clear.");
+  if (liquidityOk) score += 8;
+  else reasons.push("Liquidity/spread warning.");
+  if (notOverextended) score += 5;
+  else reasons.push("Idea may already be overextended.");
+  if (rulesClear) score += 7;
+  else reasons.push("Polymarket rules/resolution are not clear enough.");
+  if (!actionable) reasons.push("Recommendation is watch/skip/avoid, not an execution candidate.");
+
+  const executionReadinessScore = Math.min(100, score);
+  const autoPaperEligible = actionable && executionReadinessScore >= 75 && entry && stop && target && liquidityOk && notOverextended && rulesClear;
+  const executionPlanQuality: RecommendationLedgerItem["executionPlanQuality"] =
+    executionReadinessScore >= 92 ? "elite" : executionReadinessScore >= 82 ? "strong" : executionReadinessScore >= 65 ? "acceptable" : "weak";
+  return {
+    executionReadinessScore,
+    autoPaperEligible,
+    reasonNotEligible: autoPaperEligible ? "" : reasons.join(" "),
+    executionPlanQuality
+  };
+}
+
+function normalizeStoredItem(item: RecommendationLedgerItem): RecommendationLedgerItem {
+  const directExecutionPlan =
+    item.directExecutionPlan ?? {
+      label: item.recommendation === "AVOID" ? "AVOID" : item.recommendation === "SKIP" ? "SKIP" : item.marketType === "polymarket" ? "POLYMARKET BINARY RISK" : "WATCH ONLY",
+      category: item.marketType === "polymarket" ? "POLYMARKET" : item.tradeCategory === "LONG_TERM" ? "LONG-TERM INVESTING" : "DAY TRADE - SHARES",
+      direction: item.recommendation === "PAPER_YES" ? "PAPER YES" : item.recommendation === "PAPER_NO" ? "PAPER NO" : item.recommendation === "PAPER_TRADE" ? "LONG WATCH" : "WATCH",
+      currentPriceOrOdds: item.currentPriceOrOddsAtRecommendation,
+      entryZone: item.entryZone,
+      stopOrInvalidation: item.stopOrInvalidation,
+      target1: item.target1,
+      target2: item.target2,
+      maxPaperRisk: "$2-$5" as const,
+      suggestedPaperPositionSize: "Risk only $2-$5 while paper-tracking.",
+      timeHorizon: item.tradeCategory === "DAY_TRADE" ? "Same day watch." : item.tradeCategory === "POLYMARKET" ? "Until the catalyst resolves." : "Longer-term watchlist.",
+      plainEnglish: item.beginnerThesis,
+      robinhoodSteps: ["Open Robinhood.", `Search ${item.tickerOrMarket}.`, "Use limit order only if manually trading.", "Click 'I entered this' in the app if paper-tracking."],
+      polymarketSteps: ["Open Polymarket.", `Search ${item.title}.`, "Read rules first.", "Click 'I entered this' in the app if paper-tracking."],
+      optionsUnavailableMessage: "Options Watch unavailable - options chain data source not connected.",
+      warnings: ["Manual approval only. No real auto-trading."]
+    };
+  return {
+    ...item,
+    executionReadinessScore: item.executionReadinessScore ?? 0,
+    autoPaperEligible: item.autoPaperEligible ?? false,
+    reasonNotEligible: item.reasonNotEligible ?? "Saved before execution readiness scoring existed.",
+    executionPlanQuality: item.executionPlanQuality ?? "weak",
+    directExecutionPlan,
+    autoPaperTrade: item.autoPaperTrade ?? null
+  };
+}
+
 function learningAdjustmentFor(opportunity: UnifiedOpportunity, existing: RecommendationLedgerItem[]) {
   const similar = existing.filter((item) => item.catalystType === opportunity.catalyst.type || item.strategyTags.includes(opportunity.catalyst.type));
   const completed = similar.filter((item) => ["target_hit", "stopped_out", "expired", "manually_closed"].includes(item.status));
@@ -71,15 +253,18 @@ export function recommendationFromOpportunity(
   const marketType = opportunity.marketType;
   const tradeCategory = marketType === "polymarket" ? "POLYMARKET" : opportunity.actionPlan.decisionLabel === "Watch" ? "LONG_TERM" : "DAY_TRADE";
   const learning = learningAdjustmentFor(opportunity, existing);
-  return {
+  const recommendation = normalizeRecommendation(opportunity.actionPlan.decisionLabel, marketType);
+  const createdAt = now();
+  const directExecutionPlan = buildDirectExecutionPlan(opportunity, tradeCategory, recommendation);
+  const base = {
     id: `${opportunity.id}-${opportunity.source}`,
-    createdAt: now(),
+    createdAt,
     marketType,
     tradeCategory,
     tickerOrMarket: opportunity.symbol,
     title: opportunity.title,
-    recommendation: normalizeRecommendation(opportunity.actionPlan.decisionLabel, marketType),
-    entryZone: opportunity.actionPlan.manualChecklist.find((item) => item.toLowerCase().includes("entry") || item.toLowerCase().includes("price")) ?? opportunity.current,
+    recommendation,
+    entryZone: directExecutionPlan.entryZone,
     stopOrInvalidation: opportunity.invalidation,
     target1: opportunity.actionPlan.whenToExit,
     target2: opportunity.bullCase,
@@ -104,7 +289,32 @@ export function recommendationFromOpportunity(
     lessonLearned: "",
     ...learning,
     lastCheckedAt: null,
-    lastAlertedStatus: null
+    lastAlertedStatus: null,
+    directExecutionPlan
+  } satisfies Omit<
+    RecommendationLedgerItem,
+    "executionReadinessScore" | "autoPaperEligible" | "reasonNotEligible" | "executionPlanQuality" | "autoPaperTrade"
+  >;
+  const readiness = executionReadinessFor(base);
+  return {
+    ...base,
+    ...readiness,
+    status: readiness.autoPaperEligible ? "waiting_for_trigger" : base.status,
+    autoPaperTrade: readiness.autoPaperEligible
+      ? {
+          plannedEntry: base.entryZone,
+          plannedStopOrInvalidation: base.stopOrInvalidation,
+          plannedTarget: base.target1,
+          plannedMaxRisk: "$2-$5",
+          createdAt,
+          expiresAt: expiryFor(tradeCategory, createdAt),
+          sourceRecommendationId: base.id,
+          currentPriceOrOdds: base.currentPriceOrOddsAtRecommendation,
+          maxFavorableMove: "No live move tracked yet.",
+          maxAdverseMove: "No live move tracked yet.",
+          theoreticalResult: "Waiting for trigger."
+        }
+      : null
   };
 }
 
@@ -115,14 +325,48 @@ export function recommendationsFromEngine(engine: OpportunityEngineResponse, exi
 export function recommendationsFromReport(report: SavedDailyReport, existing: RecommendationLedgerItem[] = []) {
   const reportRecommendations: RecommendationLedgerItem[] = [];
   report.topDayTradeIdeas.forEach((idea) => {
-    reportRecommendations.push({
+    const recommendation = idea.actionLabel.toLowerCase().includes("paper") ? "PAPER_TRADE" : idea.actionLabel.toLowerCase().includes("avoid") ? "AVOID" : "WATCH";
+    const directExecutionPlan: RecommendationLedgerItem["directExecutionPlan"] = {
+      label: recommendation === "PAPER_TRADE" ? "PAPER EXECUTION CANDIDATE" : recommendation === "AVOID" ? "AVOID" : "WATCH ONLY",
+      category: "DAY TRADE - SHARES",
+      direction: recommendation === "PAPER_TRADE" ? "LONG WATCH" : "WATCH",
+      currentPriceOrOdds: idea.current,
+      entryZone: idea.entryZone,
+      stopOrInvalidation: idea.stopInvalidation,
+      target1: idea.target,
+      target2: idea.watchNext[0] ?? idea.target,
+      maxPaperRisk: "$2-$5",
+      suggestedPaperPositionSize: "Risk only $2-$5. Use a tiny paper position sized around the stop distance.",
+      timeHorizon: "Same day. Expire this idea by the close unless the trigger is active.",
+      plainEnglish: idea.reason,
+      robinhoodSteps: [
+        "Open Robinhood.",
+        "Tap Search.",
+        `Type ${idea.symbol}.`,
+        "Tap the correct stock/ETF.",
+        "Tap Trade.",
+        "Tap Buy.",
+        "Choose Dollars or Shares.",
+        "Choose Limit Order, not Market Order.",
+        "Enter the limit price from the entry zone.",
+        "Review estimated cost.",
+        "Do not submit if price moved outside the entry zone.",
+        "If paper trading, click 'I entered this' in the app.",
+        "If the invalidation level breaks, exit manually or use a stop/stop-limit if available.",
+        "If target hits, take profit or mark target hit in the app."
+      ],
+      polymarketSteps: [],
+      optionsUnavailableMessage: "Options Watch unavailable - options chain data source not connected.",
+      warnings: ["No market orders. Use a limit order only if manually trading.", "Manual approval only. No real auto-trading."]
+    };
+    const base = {
       id: `${report.id}-${idea.id}`,
       createdAt: report.timestamp,
       marketType: "stock",
       tradeCategory: "DAY_TRADE",
       tickerOrMarket: idea.symbol,
       title: idea.title,
-      recommendation: idea.actionLabel.toLowerCase().includes("paper") ? "PAPER_TRADE" : idea.actionLabel.toLowerCase().includes("avoid") ? "AVOID" : "WATCH",
+      recommendation,
       entryZone: idea.entryZone,
       stopOrInvalidation: idea.stopInvalidation,
       target1: idea.target,
@@ -187,7 +431,32 @@ export function recommendationsFromReport(report: SavedDailyReport, existing: Re
         existing
       ),
       lastCheckedAt: null,
-      lastAlertedStatus: null
+      lastAlertedStatus: null,
+      directExecutionPlan
+    } satisfies Omit<
+      RecommendationLedgerItem,
+      "executionReadinessScore" | "autoPaperEligible" | "reasonNotEligible" | "executionPlanQuality" | "autoPaperTrade"
+    >;
+    const readiness = executionReadinessFor(base);
+    reportRecommendations.push({
+      ...base,
+      ...readiness,
+      status: readiness.autoPaperEligible ? "waiting_for_trigger" : base.status,
+      autoPaperTrade: readiness.autoPaperEligible
+        ? {
+            plannedEntry: base.entryZone,
+            plannedStopOrInvalidation: base.stopOrInvalidation,
+            plannedTarget: base.target1,
+            plannedMaxRisk: "$2-$5",
+            createdAt: base.createdAt,
+            expiresAt: expiryFor("DAY_TRADE", base.createdAt),
+            sourceRecommendationId: base.id,
+            currentPriceOrOdds: base.currentPriceOrOddsAtRecommendation,
+            maxFavorableMove: "No live move tracked yet.",
+            maxAdverseMove: "No live move tracked yet.",
+            theoreticalResult: "Waiting for trigger."
+          }
+        : null
     });
   });
   return reportRecommendations;
@@ -195,7 +464,7 @@ export function recommendationsFromReport(report: SavedDailyReport, existing: Re
 
 export async function loadRecommendationLedger() {
   const recommendations = ((await store().get(LEDGER_KEY, { type: "json" })) ?? []) as RecommendationLedgerItem[];
-  return recommendations;
+  return recommendations.map(normalizeStoredItem);
 }
 
 export async function saveRecommendationLedger(recommendations: RecommendationLedgerItem[]) {
@@ -218,9 +487,9 @@ export async function updateRecommendation(id: string, update: Partial<Recommend
 }
 
 function winRate(items: RecommendationLedgerItem[]) {
-  const completed = items.filter((item) => ["target_hit", "stopped_out", "expired", "manually_closed"].includes(item.status));
+  const completed = items.filter((item) => ["target_hit", "stopped_out", "expired", "manually_closed", "missed_winner", "good_skip"].includes(item.status));
   if (!completed.length) return 0;
-  const wins = completed.filter((item) => item.status === "target_hit" || Number(item.resultPct ?? 0) > 0);
+  const wins = completed.filter((item) => ["target_hit", "good_skip"].includes(item.status) || Number(item.resultPct ?? 0) > 0);
   return Math.round((wins.length / completed.length) * 100);
 }
 
@@ -236,11 +505,17 @@ export function analyzeRecommendationLedger(recommendations: RecommendationLedge
   const winRateBySignalType = ratesBy(recommendations, (item) => item.signalTypes);
   const winRateByCatalystType = ratesBy(recommendations, (item) => [item.catalystType]);
   const entries = Object.entries(winRateBySignalType).sort((a, b) => b[1] - a[1]);
+  const categoryEntries = Object.entries(ratesBy(recommendations, (item) => [item.tradeCategory])).sort((a, b) => b[1] - a[1]);
   const missedWinners = recommendations.filter((item) => item.userActuallyEntered === "no" && item.status === "target_hit").length;
   const avoidedLosers = recommendations.filter((item) => ["SKIP", "AVOID"].includes(item.recommendation) && item.status === "stopped_out").length;
+  const autoPaperItems = recommendations.filter((item) => item.autoPaperTrade);
+  const userEnteredItems = recommendations.filter((item) => item.userActuallyEntered === "yes");
+  const stopMaking = Object.entries(winRateBySignalType)
+    .filter(([, rate]) => rate > 0 && rate < 40)
+    .map(([name, rate]) => `${name}: ${rate}% win rate. Require stronger confirmation or stop making this setup.`);
   return {
     totalRecommendations: recommendations.length,
-    winRateByCategory: ratesBy(recommendations, (item) => [item.tradeCategory]),
+    winRateByCategory: Object.fromEntries(categoryEntries),
     winRateBySignalType,
     winRateByCatalystType,
     winRateByScoreBucket: ratesBy(recommendations, (item) => [scoreBucket(Number(item.resultPct ?? 65))]),
@@ -254,6 +529,14 @@ export function analyzeRecommendationLedger(recommendations: RecommendationLedge
     worstPerformingSetupType: entries.at(-1)?.[0] ?? "n/a",
     missedWinners,
     avoidedLosers,
+    autoPaperWinRate: winRate(autoPaperItems),
+    userEnteredWinRate: winRate(userEnteredItems),
+    skippedWinnerCount: recommendations.filter((item) => item.status === "missed_winner" || (item.userActuallyEntered === "no" && item.status === "target_hit")).length,
+    avoidedLoserCount: recommendations.filter((item) => item.status === "good_skip" || (["SKIP", "AVOID"].includes(item.recommendation) && item.status === "stopped_out")).length,
+    bestSignalType: entries[0]?.[0] ?? "n/a",
+    worstSignalType: entries.at(-1)?.[0] ?? "n/a",
+    bestCategory: categoryEntries[0]?.[0] ?? "n/a",
+    recommendationsToStopMaking: stopMaking.length ? stopMaking : ["Need more completed outcomes before stopping a setup type."],
     overconfidenceWarning:
       recommendations.filter((item) => item.confidence === "high" && item.status === "stopped_out").length >= 2
         ? "High-confidence ideas have recent losses. Lower confidence until confirmation improves."

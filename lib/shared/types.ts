@@ -592,14 +592,52 @@ export type ScheduleDiagnosticsRecord = {
 
 export type RecommendationStatus =
   | "recommended"
+  | "waiting_for_trigger"
   | "user_entered"
   | "user_skipped"
   | "missed_trigger"
+  | "missed_winner"
+  | "good_skip"
   | "triggered"
   | "target_hit"
   | "stopped_out"
   | "expired"
   | "manually_closed";
+
+export type ExecutionPlanQuality = "weak" | "acceptable" | "strong" | "elite";
+
+export type DirectExecutionPlan = {
+  label: "PAPER EXECUTION CANDIDATE" | "WATCH ONLY" | "SKIP" | "AVOID" | "OPTIONS WATCH - HIGH RISK" | "POLYMARKET BINARY RISK";
+  category: "DAY TRADE - SHARES" | "DAY TRADE - OPTIONS WATCH" | "LONG-TERM INVESTING" | "POLYMARKET";
+  direction: "LONG WATCH" | "SHORT WATCH" | "WATCH" | "PAPER YES" | "PAPER NO" | "NO TRADE";
+  currentPriceOrOdds: string;
+  entryZone: string;
+  stopOrInvalidation: string;
+  target1: string;
+  target2: string;
+  maxPaperRisk: "$2-$5";
+  suggestedPaperPositionSize: string;
+  timeHorizon: string;
+  plainEnglish: string;
+  robinhoodSteps: string[];
+  polymarketSteps: string[];
+  optionsUnavailableMessage: string;
+  warnings: string[];
+};
+
+export type AutoPaperTradePlan = {
+  plannedEntry: string;
+  plannedStopOrInvalidation: string;
+  plannedTarget: string;
+  plannedMaxRisk: "$2-$5";
+  createdAt: string;
+  expiresAt: string;
+  sourceRecommendationId: string;
+  currentPriceOrOdds: string;
+  maxFavorableMove: string;
+  maxAdverseMove: string;
+  theoreticalResult: string;
+};
 
 export type RecommendationLedgerItem = {
   id: string;
@@ -636,6 +674,12 @@ export type RecommendationLedgerItem = {
   learningAdjustmentReason: string;
   lastCheckedAt: string | null;
   lastAlertedStatus: RecommendationStatus | null;
+  executionReadinessScore: number;
+  autoPaperEligible: boolean;
+  reasonNotEligible: string;
+  executionPlanQuality: ExecutionPlanQuality;
+  directExecutionPlan: DirectExecutionPlan;
+  autoPaperTrade: AutoPaperTradePlan | null;
 };
 
 export type RecommendationLedgerResponse = {
@@ -657,6 +701,14 @@ export type LearningAnalytics = {
   worstPerformingSetupType: string;
   missedWinners: number;
   avoidedLosers: number;
+  autoPaperWinRate: number;
+  userEnteredWinRate: number;
+  skippedWinnerCount: number;
+  avoidedLoserCount: number;
+  bestSignalType: string;
+  worstSignalType: string;
+  bestCategory: string;
+  recommendationsToStopMaking: string[];
   overconfidenceWarning: string;
   systemGoodAt: string;
   systemBadAt: string;

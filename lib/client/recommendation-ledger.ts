@@ -2,11 +2,42 @@ import type { LearningAnalytics, RecommendationLedgerItem, RecommendationLedgerR
 
 const LEDGER_KEY = "market-intelligence-recommendation-ledger";
 
+function normalizeItem(item: RecommendationLedgerItem): RecommendationLedgerItem {
+  const directExecutionPlan =
+    item.directExecutionPlan ?? {
+      label: item.recommendation === "AVOID" ? "AVOID" : item.recommendation === "SKIP" ? "SKIP" : item.marketType === "polymarket" ? "POLYMARKET BINARY RISK" : "WATCH ONLY",
+      category: item.marketType === "polymarket" ? "POLYMARKET" : item.tradeCategory === "LONG_TERM" ? "LONG-TERM INVESTING" : "DAY TRADE - SHARES",
+      direction: item.recommendation === "PAPER_YES" ? "PAPER YES" : item.recommendation === "PAPER_NO" ? "PAPER NO" : item.recommendation === "PAPER_TRADE" ? "LONG WATCH" : "WATCH",
+      currentPriceOrOdds: item.currentPriceOrOddsAtRecommendation,
+      entryZone: item.entryZone,
+      stopOrInvalidation: item.stopOrInvalidation,
+      target1: item.target1,
+      target2: item.target2,
+      maxPaperRisk: "$2-$5" as const,
+      suggestedPaperPositionSize: "Risk only $2-$5 while paper-tracking.",
+      timeHorizon: item.tradeCategory === "DAY_TRADE" ? "Same day watch." : item.tradeCategory === "POLYMARKET" ? "Until the catalyst resolves." : "Longer-term watchlist.",
+      plainEnglish: item.beginnerThesis,
+      robinhoodSteps: ["Open Robinhood.", `Search ${item.tickerOrMarket}.`, "Use limit order only if manually trading.", "Click 'I entered this' in the app if paper-tracking."],
+      polymarketSteps: ["Open Polymarket.", `Search ${item.title}.`, "Read rules first.", "Click 'I entered this' in the app if paper-tracking."],
+      optionsUnavailableMessage: "Options Watch unavailable - options chain data source not connected.",
+      warnings: ["Manual approval only. No real auto-trading."]
+    };
+  return {
+    ...item,
+    executionReadinessScore: item.executionReadinessScore ?? 0,
+    autoPaperEligible: item.autoPaperEligible ?? false,
+    reasonNotEligible: item.reasonNotEligible ?? "Saved before execution readiness scoring existed.",
+    executionPlanQuality: item.executionPlanQuality ?? "weak",
+    directExecutionPlan,
+    autoPaperTrade: item.autoPaperTrade ?? null
+  };
+}
+
 export function loadLocalRecommendationLedger(): RecommendationLedgerItem[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = window.localStorage.getItem(LEDGER_KEY);
-    return raw ? (JSON.parse(raw) as RecommendationLedgerItem[]) : [];
+    return raw ? (JSON.parse(raw) as RecommendationLedgerItem[]).map(normalizeItem) : [];
   } catch {
     return [];
   }
@@ -32,9 +63,11 @@ export function analyzeLocalRecommendationLedger(items: RecommendationLedgerItem
   };
   const signalRates = by((item) => item.signalTypes);
   const ranked = Object.entries(signalRates).sort((a, b) => b[1] - a[1]);
+  const categoryRates = by((item) => [item.tradeCategory]);
+  const rankedCategories = Object.entries(categoryRates).sort((a, b) => b[1] - a[1]);
   return {
     totalRecommendations: items.length,
-    winRateByCategory: by((item) => [item.tradeCategory]),
+    winRateByCategory: categoryRates,
     winRateBySignalType: signalRates,
     winRateByCatalystType: by((item) => [item.catalystType]),
     winRateByScoreBucket: by(() => ["tracked"]),
@@ -43,6 +76,14 @@ export function analyzeLocalRecommendationLedger(items: RecommendationLedgerItem
     worstPerformingSetupType: ranked.at(-1)?.[0] ?? "n/a",
     missedWinners: items.filter((item) => item.userActuallyEntered === "no" && item.status === "target_hit").length,
     avoidedLosers: items.filter((item) => ["SKIP", "AVOID"].includes(item.recommendation) && item.status === "stopped_out").length,
+    autoPaperWinRate: rate(items.filter((item) => item.autoPaperTrade)),
+    userEnteredWinRate: rate(items.filter((item) => item.userActuallyEntered === "yes")),
+    skippedWinnerCount: items.filter((item) => item.status === "missed_winner" || (item.userActuallyEntered === "no" && item.status === "target_hit")).length,
+    avoidedLoserCount: items.filter((item) => item.status === "good_skip" || (["SKIP", "AVOID"].includes(item.recommendation) && item.status === "stopped_out")).length,
+    bestSignalType: ranked[0]?.[0] ?? "n/a",
+    worstSignalType: ranked.at(-1)?.[0] ?? "n/a",
+    bestCategory: rankedCategories[0]?.[0] ?? "n/a",
+    recommendationsToStopMaking: ranked.filter(([, value]) => value > 0 && value < 40).map(([key, value]) => `${key}: ${value}% win rate. Require stronger confirmation.`),
     overconfidenceWarning: wins.length < completed.length / 2 && completed.length >= 3 ? "Recent completed ideas are underperforming. Require stronger confirmation." : "No overconfidence warning yet.",
     systemGoodAt: ranked[0] ? `The system has been good at ${ranked[0][0]}.` : "The system needs more outcomes.",
     systemBadAt: ranked.at(-1) ? `The system has been bad at ${ranked.at(-1)?.[0]}.` : "The system needs more outcomes."
@@ -53,7 +94,8 @@ export async function loadServerRecommendationLedger(): Promise<RecommendationLe
   try {
     const response = await fetch("/.netlify/functions/recommendation-ledger");
     if (!response.ok) throw new Error("Recommendation ledger fetch failed.");
-    return (await response.json()) as RecommendationLedgerResponse & { analytics: LearningAnalytics };
+    const payload = (await response.json()) as RecommendationLedgerResponse & { analytics: LearningAnalytics };
+    return { ...payload, recommendations: payload.recommendations.map(normalizeItem) };
   } catch (error) {
     const recommendations = loadLocalRecommendationLedger();
     return {
@@ -77,8 +119,9 @@ export async function saveRecommendationUpdate(id: string, update: Partial<Recom
     });
     if (!response.ok) throw new Error("Recommendation ledger update failed.");
     const payload = (await response.json()) as RecommendationLedgerResponse & { analytics: LearningAnalytics };
-    saveLocalRecommendationLedger(payload.recommendations);
-    return payload;
+    const recommendations = payload.recommendations.map(normalizeItem);
+    saveLocalRecommendationLedger(recommendations);
+    return { ...payload, recommendations };
   } catch {
     return {
       ok: false,

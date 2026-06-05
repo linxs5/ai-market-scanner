@@ -89,6 +89,7 @@ type Tab =
   | "Reports"
   | "Alerts"
   | "Active Trades"
+  | "Auto Paper Trades"
   | "Recommendation Ledger"
   | "Learning"
   | "Polymarket $50 Plan"
@@ -146,6 +147,7 @@ const tabs: Tab[] = [
   "Reports",
   "Alerts",
   "Active Trades",
+  "Auto Paper Trades",
   "Recommendation Ledger",
   "Learning",
   "Polymarket $50 Plan",
@@ -1001,6 +1003,9 @@ export default function Home() {
         {activeTab === "Active Trades" ? (
           <ActiveTradesPanel recommendations={recommendations} onRefresh={loadRecommendationLedgerNow} onMark={markRecommendation} />
         ) : null}
+        {activeTab === "Auto Paper Trades" ? (
+          <AutoPaperTradesPanel recommendations={recommendations} onRefresh={loadRecommendationLedgerNow} onMark={markRecommendation} onEntered={markRecommendationEntered} />
+        ) : null}
         {activeTab === "Recommendation Ledger" ? (
           <RecommendationLedgerPanel recommendations={recommendations} onRefresh={loadRecommendationLedgerNow} onMark={markRecommendation} onEntered={markRecommendationEntered} />
         ) : null}
@@ -1080,6 +1085,10 @@ function RecommendationCard({
         <div className="flex flex-wrap gap-2">
           <span className={badgeClass(item.status === "target_hit" ? "green" : item.status === "stopped_out" ? "red" : "yellow")}>{item.status}</span>
           <span className={badgeClass(riskTone(item.riskLevel))}>{item.riskLevel}</span>
+          <span className={badgeClass(item.autoPaperEligible ? "green" : item.executionReadinessScore >= 65 ? "yellow" : "red")}>
+            readiness {item.executionReadinessScore}
+          </span>
+          <span className={badgeClass(item.autoPaperEligible ? "green" : "yellow")}>{item.autoPaperEligible ? "PAPER EXECUTION CANDIDATE" : item.directExecutionPlan.label}</span>
         </div>
       </div>
       <div className="mt-4 grid gap-4 lg:grid-cols-3">
@@ -1090,7 +1099,9 @@ function RecommendationCard({
         <Info title="Target 2" text={item.target2} />
         <Info title="Learning adjustment" text={item.learningAdjustmentReason} />
       </div>
+      <DirectExecutionPlanCard item={item} compact />
       <p className="mt-3 text-sm text-terminal-muted">Max risk: {item.maxRisk}. Manual approval only. Paper trade first.</p>
+      {!item.autoPaperEligible && item.reasonNotEligible ? <p className="mt-2 text-sm text-terminal-amber">Not auto-paper eligible: {item.reasonNotEligible}</p> : null}
       <div className="mt-4 flex flex-wrap gap-2">
         {onEntered ? <button onClick={() => onEntered(item, false)} className="rounded-md border border-terminal-line px-3 py-2 text-sm text-terminal-muted hover:text-white">I entered this</button> : null}
         <button onClick={() => onMark(item.id, "user_skipped", "no")} className="rounded-md border border-terminal-line px-3 py-2 text-sm text-terminal-muted hover:text-white">I skipped this</button>
@@ -1100,6 +1111,39 @@ function RecommendationCard({
         <button onClick={() => onMark(item.id, "manually_closed", item.userActuallyEntered)} className="rounded-md border border-terminal-line px-3 py-2 text-sm text-terminal-muted hover:text-white">Manually close</button>
       </div>
     </article>
+  );
+}
+
+function DirectExecutionPlanCard({ item, compact = false }: { item: RecommendationLedgerItem; compact?: boolean }) {
+  const plan = item.directExecutionPlan;
+  const steps = item.marketType === "polymarket" ? plan.polymarketSteps : plan.robinhoodSteps;
+  return (
+    <div className="mt-4 rounded-md border border-terminal-line bg-terminal-ink/60 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <h4 className="font-semibold text-white">Direct Execution Plan</h4>
+        <span className={badgeClass(plan.label.includes("CANDIDATE") || plan.label.includes("BINARY") ? "green" : plan.label === "AVOID" ? "red" : "yellow")}>{plan.label}</span>
+        <span className={badgeClass(item.executionPlanQuality === "elite" || item.executionPlanQuality === "strong" ? "green" : item.executionPlanQuality === "weak" ? "red" : "yellow")}>{item.executionPlanQuality}</span>
+      </div>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Info title="Direction" text={plan.direction} />
+        <Info title="Current" text={plan.currentPriceOrOdds} />
+        <Info title="Entry zone" text={plan.entryZone} />
+        <Info title="Stop / invalidation" text={plan.stopOrInvalidation} />
+        <Info title="Target 1" text={plan.target1} />
+        <Info title="Target 2" text={plan.target2} />
+        <Info title="Max paper risk" text={plan.maxPaperRisk} />
+        <Info title="Time horizon" text={plan.timeHorizon} />
+      </div>
+      {!compact ? (
+        <div className="mt-3 grid gap-3 lg:grid-cols-2">
+          <Info title="Plain English" text={plan.plainEnglish} />
+          <Info title="Suggested paper size" text={plan.suggestedPaperPositionSize} />
+          <List title={item.marketType === "polymarket" ? "Exact Polymarket steps" : "Exact Robinhood steps"} items={steps.length ? steps : [plan.optionsUnavailableMessage]} />
+          <List title="Warnings" items={plan.warnings} />
+        </div>
+      ) : null}
+      {plan.optionsUnavailableMessage ? <p className="mt-3 text-sm text-terminal-amber">{plan.optionsUnavailableMessage}</p> : null}
+    </div>
   );
 }
 
@@ -1687,7 +1731,7 @@ function ActiveTradesPanel({
   onRefresh: () => void;
   onMark: (id: string, status: RecommendationLedgerItem["status"], userActuallyEntered?: RecommendationLedgerItem["userActuallyEntered"]) => void;
 }) {
-  const active = recommendations.filter((item) => ["user_entered", "triggered", "recommended"].includes(item.status));
+  const active = recommendations.filter((item) => ["waiting_for_trigger", "user_entered", "triggered", "recommended"].includes(item.status));
   async function runMonitor() {
     await fetch("/.netlify/functions/active-trade-monitor", { method: "POST" }).catch(() => null);
     await onRefresh();
@@ -1696,6 +1740,77 @@ function ActiveTradesPanel({
     <section className="grid gap-4">
       <ScannerHeader title="Active Trades" subtitle="Tracks recommendations and paper/real user-entered ideas. No brokerage connection." onRun={runMonitor} loading={false} />
       {active.length ? active.map((item) => <RecommendationCard key={item.id} item={item} onMark={onMark} />) : <EmptyState text="No active recommendations yet." />}
+    </section>
+  );
+}
+
+function AutoPaperTradesPanel({
+  recommendations,
+  onRefresh,
+  onMark,
+  onEntered
+}: {
+  recommendations: RecommendationLedgerItem[];
+  onRefresh: () => void;
+  onMark: (id: string, status: RecommendationLedgerItem["status"], userActuallyEntered?: RecommendationLedgerItem["userActuallyEntered"]) => void;
+  onEntered: (item: RecommendationLedgerItem, realTrade: boolean) => void;
+}) {
+  const autoPaper = recommendations.filter((item) => item.autoPaperTrade);
+  const groups = [
+    ["Waiting for trigger", autoPaper.filter((item) => item.status === "waiting_for_trigger")],
+    ["Triggered", autoPaper.filter((item) => item.status === "triggered" || item.status === "user_entered")],
+    ["Target hit", autoPaper.filter((item) => item.status === "target_hit")],
+    ["Stopped out", autoPaper.filter((item) => item.status === "stopped_out")],
+    ["Expired", autoPaper.filter((item) => item.status === "expired")],
+    ["Missed winner", autoPaper.filter((item) => item.status === "missed_winner")],
+    ["Good skip", autoPaper.filter((item) => item.status === "good_skip")]
+  ] as const;
+  async function runMonitor() {
+    await fetch("/.netlify/functions/active-trade-monitor", { method: "POST" }).catch(() => null);
+    await onRefresh();
+  }
+  return (
+    <section className="grid gap-4">
+      <ScannerHeader title="Auto Paper Trades" subtitle="Strong recommendations are automatically paper-tracked. No real orders, no broker connection, no wallet connection." onRun={runMonitor} loading={false} />
+      <div className="grid gap-4 lg:grid-cols-4">
+        <Metric icon={<ClipboardCheck />} label="Auto-paper ideas" value={String(autoPaper.length)} />
+        <Metric icon={<Radio />} label="Waiting" value={String(groups[0][1].length)} />
+        <Metric icon={<Target />} label="Triggered" value={String(groups[1][1].length)} />
+        <Metric icon={<CheckCircle2 />} label="Completed" value={String(autoPaper.filter((item) => ["target_hit", "stopped_out", "expired", "missed_winner", "good_skip"].includes(item.status)).length)} />
+      </div>
+      {!autoPaper.length ? <EmptyState text="No auto-paper trades yet. Run Opportunities; eligible high-quality plans start waiting for trigger automatically." /> : null}
+      {groups.map(([title, items]) =>
+        items.length ? (
+          <div key={title} className="grid gap-3">
+            <h3 className="text-sm font-semibold uppercase text-terminal-cyan">{title}</h3>
+            {items.map((item) => (
+              <article key={item.id} className="rounded-md border border-terminal-line bg-terminal-panel p-4">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <h4 className="text-lg font-semibold text-white">{item.title}</h4>
+                    <p className="mt-1 text-sm text-terminal-muted">{item.tickerOrMarket} · {item.tradeCategory} · user entered: {item.userActuallyEntered}</p>
+                  </div>
+                  <span className={badgeClass(item.status === "target_hit" || item.status === "good_skip" ? "green" : item.status === "stopped_out" ? "red" : "yellow")}>{item.status}</span>
+                </div>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <Info title="Original recommendation" text={`${item.recommendation}. ${item.beginnerThesis}`} />
+                  <Info title="Current price/odds" text={item.autoPaperTrade?.currentPriceOrOdds ?? item.currentPriceOrOddsAtRecommendation} />
+                  <Info title="Max favorable move" text={item.autoPaperTrade?.maxFavorableMove ?? "Not checked yet."} />
+                  <Info title="Max adverse move" text={item.autoPaperTrade?.maxAdverseMove ?? "Not checked yet."} />
+                  <Info title="Theoretical result" text={item.autoPaperTrade?.theoreticalResult ?? "Waiting for monitor."} />
+                  <Info title="Lesson learned" text={item.lessonLearned || "No lesson saved yet."} />
+                </div>
+                <DirectExecutionPlanCard item={item} />
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button onClick={() => onEntered(item, false)} className="rounded-md border border-terminal-green/40 px-3 py-2 text-sm text-terminal-green">I entered this</button>
+                  <button onClick={() => onMark(item.id, "user_skipped", "no")} className="rounded-md border border-terminal-line px-3 py-2 text-sm text-terminal-muted hover:text-white">I skipped this</button>
+                  <button onClick={() => onMark(item.id, "manually_closed", item.userActuallyEntered)} className="rounded-md border border-terminal-line px-3 py-2 text-sm text-terminal-muted hover:text-white">Manually close</button>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : null
+      )}
     </section>
   );
 }
@@ -1724,15 +1839,22 @@ function LearningPanel({ analytics }: { analytics: LearningAnalytics }) {
     <section className="grid gap-4">
       <div className="grid gap-4 lg:grid-cols-4">
         <Metric icon={<Brain />} label="Recommendations" value={String(analytics.totalRecommendations)} />
-        <Metric icon={<Target />} label="Missed winners" value={String(analytics.missedWinners)} />
-        <Metric icon={<ShieldAlert />} label="Avoided losers" value={String(analytics.avoidedLosers)} />
-        <Metric icon={<Gauge />} label="Best setup" value={analytics.bestPerformingSetupType} />
+        <Metric icon={<Target />} label="Auto-paper win rate" value={`${analytics.autoPaperWinRate}%`} />
+        <Metric icon={<CheckCircle2 />} label="User-entered win rate" value={`${analytics.userEnteredWinRate}%`} />
+        <Metric icon={<Gauge />} label="Best category" value={analytics.bestCategory} />
+      </div>
+      <div className="grid gap-4 lg:grid-cols-4">
+        <Metric icon={<Target />} label="Skipped winners" value={String(analytics.skippedWinnerCount)} />
+        <Metric icon={<ShieldAlert />} label="Avoided losers" value={String(analytics.avoidedLoserCount)} />
+        <Metric icon={<TrendingUp />} label="Best signal" value={analytics.bestSignalType} />
+        <Metric icon={<AlertTriangle />} label="Worst signal" value={analytics.worstSignalType} />
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
         <List title="Win rate by category" items={Object.entries(analytics.winRateByCategory).map(([key, value]) => `${key}: ${value}%`)} />
         <List title="Win rate by signal type" items={Object.entries(analytics.winRateBySignalType).map(([key, value]) => `${key}: ${value}%`)} />
         <List title="Win rate by catalyst type" items={Object.entries(analytics.winRateByCatalystType).map(([key, value]) => `${key}: ${value}%`)} />
         <List title="Average result by confidence" items={Object.entries(analytics.averageResultByConfidence).map(([key, value]) => `${key}: ${value}%`)} />
+        <List title="Recommendations the system should stop making" items={analytics.recommendationsToStopMaking} />
         <Info title="System good at" text={analytics.systemGoodAt} />
         <Info title="System bad at" text={analytics.systemBadAt} />
       </div>
@@ -2217,6 +2339,7 @@ function SetupPanel({
           </div>
         ))}
       </div>
+      <SourceCoveragePanel setup={setup} />
       <div className="rounded-md border border-terminal-line bg-terminal-panel p-4">
         <h2 className="text-lg font-semibold text-white">Telegram setup steps</h2>
         <ol className="mt-4 grid gap-2 text-sm text-terminal-muted">
@@ -2228,6 +2351,42 @@ function SetupPanel({
         </ol>
       </div>
     </section>
+  );
+}
+
+function SourceCoveragePanel({ setup }: { setup: SetupCheckResponse | null }) {
+  const configured = setup?.configured ?? {};
+  const publicApis = setup?.publicApis ?? {};
+  const has = (keys: string[]) => keys.some((key) => Boolean(configured[key] ?? publicApis[key]));
+  const sources = [
+    ["Finnhub stock quotes", has(["FINNHUB_API_KEY"]), "Set FINNHUB_API_KEY."],
+    ["Polygon candles", has(["POLYGON_API_KEY"]), "Set POLYGON_API_KEY for richer candle data."],
+    ["SEC filings", true, "Official SEC EDGAR/company submissions are public; ticker mapping can still be uncertain."],
+    ["Earnings calendar", has(["FINNHUB_API_KEY"]), "Use Finnhub earnings calendar when the current plan allows it."],
+    ["Polymarket markets", true, "Public Polymarket market data."],
+    ["Polymarket leaderboard", true, "Public leaderboard context only; not proof of current positions."],
+    ["Telegram", has(["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]), "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."],
+    ["Options chain provider", false, "Not connected. Future provider/env var needed for reliable options chains."],
+    ["Reddit sentiment provider", false, "Not connected. Add a compliant API/provider before using social sentiment."],
+    ["Macro calendar provider", false, "Not connected. Add a macro calendar provider for official event timing."],
+    ["News/RSS provider", has(["NEWS_API_KEY", "OPENAI_API_KEY"]), "Set a news/RSS provider key; OpenAI can summarize but should not invent source data."]
+  ] as const;
+  return (
+    <div className="rounded-md border border-terminal-line bg-terminal-panel p-4">
+      <h2 className="text-lg font-semibold text-white">Source Coverage</h2>
+      <p className="mt-2 text-sm text-terminal-muted">Connected sources improve signal quality. Missing sources are shown as future provider work, not guessed data.</p>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        {sources.map(([label, connected, note]) => (
+          <div key={label} className="rounded-md border border-terminal-line bg-terminal-ink/60 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm font-semibold text-white">{label}</span>
+              <span className={badgeClass(connected ? "green" : "yellow")}>{connected ? "Connected" : "Not connected"}</span>
+            </div>
+            <p className="mt-2 text-sm text-terminal-muted">{note}</p>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
