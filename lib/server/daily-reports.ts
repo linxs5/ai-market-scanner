@@ -1,6 +1,7 @@
 import type {
   AlertResponse,
   DailyReportType,
+  LiveCalloutPlan,
   OpportunityEngineResponse,
   PolymarketActionIdea,
   PolymarketHourlyWatch,
@@ -153,6 +154,167 @@ function makeHourlyWatch(opportunity: UnifiedOpportunity): PolymarketHourlyWatch
   };
 }
 
+function parseStockPrice(opportunity: UnifiedOpportunity) {
+  const match = opportunity.current.match(/\$([0-9]+(?:\.[0-9]+)?)/);
+  const price = match ? Number(match[1]) : NaN;
+  return Number.isFinite(price) && price > 0 ? price : null;
+}
+
+function dollars(value: number) {
+  return `$${value.toFixed(2)}`;
+}
+
+function stockDirection(opportunity: UnifiedOpportunity): LiveCalloutPlan["direction"] {
+  if (opportunity.actionPlan.decisionLabel === "Avoid" || opportunity.actionPlan.decisionLabel === "Skip") return "NO TRADE";
+  return opportunity.current.includes("(-") ? "SHORT WATCH" : "LONG WATCH";
+}
+
+function makeStockCallout(opportunity: UnifiedOpportunity, index: number): LiveCalloutPlan {
+  const price = parseStockPrice(opportunity);
+  const isLong = stockDirection(opportunity) !== "SHORT WATCH";
+  const keyLevel = price === null ? "current app price" : dollars(isLong ? price + 0.2 : Math.max(0.01, price - 0.2));
+  const stop = price === null ? "the failed trigger level" : dollars(isLong ? Math.max(0.01, price - 0.5) : price + 0.5);
+  const entryA = price === null ? null : isLong ? price + 0.25 : Math.max(0.01, price - 0.6);
+  const entryB = price === null ? null : isLong ? price + 0.6 : Math.max(0.01, price - 0.25);
+  const target1 = price === null ? "next clean intraday level" : dollars(isLong ? price + 1 : Math.max(0.01, price - 1));
+  const target2 = price === null ? "second clean intraday level" : dollars(isLong ? price + 1.75 : Math.max(0.01, price - 1.75));
+  const chopLow = price === null ? stop : dollars(Math.max(0.01, price - 0.5));
+  const chopHigh = price === null ? keyLevel : dollars(price + 0.2);
+  const direction = stockDirection(opportunity);
+
+  return {
+    id: `callout-${opportunity.id}-${index}`,
+    generatedAt: new Date().toISOString(),
+    marketType: "stock",
+    market: opportunity.symbol,
+    title: `LIVE CALLOUT - ${opportunity.symbol} ${direction}`,
+    direction,
+    status: "Waiting",
+    keyLevel,
+    trigger:
+      direction === "NO TRADE"
+        ? `No trigger. ${opportunity.symbol} is a watch-only or avoid idea until the setup improves.`
+        : `Watch for ${opportunity.symbol} to ${isLong ? "break and hold above" : "break and hold below"} ${keyLevel} for 5-10 minutes.`,
+    confirmation: [
+      "Volume is increasing versus the prior few candles.",
+      "QQQ/SPY are confirming the same direction.",
+      "Price is holding above VWAP for a long watch or below VWAP for a short watch.",
+      "No immediate rejection candle after the trigger.",
+      "News/catalyst is still valid."
+    ],
+    entryZone:
+      entryA === null || entryB === null
+        ? "Only after the trigger confirms."
+        : `${dollars(Math.min(entryA, entryB))}-${dollars(Math.max(entryA, entryB))}`,
+    stopInvalidation: `The idea is wrong if price loses ${stop}.`,
+    target1,
+    target2,
+    volumeCondition: "Volume should expand on the break; weak volume means wait.",
+    doNothingCondition: `If price chops between ${chopLow} and ${chopHigh}, do nothing.`,
+    beginnerTranslation: "We are not guessing. We are waiting for buyers or sellers to prove they are in control before paper-tracking anything.",
+    robinhoodSteps: [
+      "Open Robinhood.",
+      `Search ${opportunity.symbol}.`,
+      "Check live price.",
+      "Wait for the trigger.",
+      "Use limit order only for paper planning.",
+      "Do not chase if already above Target 1.",
+      "Max paper risk $2-$5."
+    ],
+    futuresWarning: null,
+    polymarketPlan: null
+  };
+}
+
+function makeFuturesWatchCallout(): LiveCalloutPlan {
+  return {
+    id: `callout-mnq-watch-${Date.now()}`,
+    generatedAt: new Date().toISOString(),
+    marketType: "futures-watch",
+    market: "MNQ/NQ watch",
+    title: "LIVE CALLOUT - MNQ/NQ FUTURES WATCH ONLY",
+    direction: "NO TRADE",
+    status: "Waiting",
+    keyLevel: "Use QQQ as the safer beginner proxy unless you fully understand futures margin.",
+    trigger: "Watch QQQ/SPY first. Do not trade futures just because the Nasdaq moves.",
+    confirmation: [
+      "QQQ and SPY confirm direction.",
+      "Market holds above or below VWAP.",
+      "No fast rejection candle.",
+      "You understand margin and contract risk before touching futures."
+    ],
+    entryZone: "No futures entry zone for beginners. Paper-watch QQQ instead.",
+    stopInvalidation: "Invalid if the move reverses through VWAP or QQQ loses its trigger.",
+    target1: "QQQ first target from the related stock callout.",
+    target2: "QQQ second target from the related stock callout.",
+    volumeCondition: "Futures can move fast even when stock volume looks normal.",
+    doNothingCondition: "If QQQ is chopping, do nothing.",
+    beginnerTranslation: "Futures are not beginner default tools. QQQ is usually the cleaner watch proxy.",
+    robinhoodSteps: [
+      "Open Robinhood.",
+      "Use QQQ as the safer proxy watch.",
+      "Do not trade /MNQ unless you understand margin.",
+      "If paper-watching /MNQ, remember Micro Nasdaq futures use a $2 multiplier and 0.25 tick = $0.50.",
+      "Max paper risk still stays $2-$5."
+    ],
+    futuresWarning:
+      "FUTURES WATCH ONLY. Futures can move fast and losses can exceed expectations. Do not trade futures unless you understand margin. Default to QQQ as the safer beginner proxy.",
+    polymarketPlan: null
+  };
+}
+
+function makePolymarketCallout(opportunity: UnifiedOpportunity, index: number): LiveCalloutPlan {
+  const yes = opportunity.current.match(/YES\s+(\d+)%/i)?.[1];
+  const no = opportunity.current.match(/NO\s+(\d+)%/i)?.[1];
+  const yesPrice = yes ? `${yes} cents` : "current YES odds";
+  const noPrice = no ? `${no} cents` : "current NO odds";
+  const direction: LiveCalloutPlan["direction"] = opportunity.actionPlan.decisionLabel.includes("NO") ? "NO WATCH" : "YES WATCH";
+
+  return {
+    id: `callout-${opportunity.id}-${index}`,
+    generatedAt: new Date().toISOString(),
+    marketType: "polymarket",
+    market: opportunity.symbol,
+    title: `LIVE CALLOUT - ${opportunity.title}`,
+    direction,
+    status: "Waiting",
+    keyLevel: direction === "NO WATCH" ? noPrice : yesPrice,
+    trigger: `Watch for ${direction === "NO WATCH" ? "NO" : "YES"} odds to move 3-5 cents with matching volume and a fresh news reason.`,
+    confirmation: [
+      "Rules and resolution criteria are clear.",
+      "Fresh news directly affects the market question.",
+      "Liquidity and volume support the odds move.",
+      "Spread is not wide.",
+      "Do not copy leaderboard traders blindly."
+    ],
+    entryZone: `Paper only near ${direction === "NO WATCH" ? noPrice : yesPrice} if odds still match the app.`,
+    stopInvalidation: opportunity.invalidation,
+    target1: "First paper target: odds move 5 cents in your favor.",
+    target2: "Second paper target: odds move 10 cents in your favor or the thesis becomes crowded.",
+    volumeCondition: "24h volume and liquidity should rise with the odds move.",
+    doNothingCondition: "If odds drift without news or rules are unclear, do nothing.",
+    beginnerTranslation: "Prediction markets can go to zero. Wait for news and rules to support the side you are paper-tracking.",
+    robinhoodSteps: [],
+    futuresWarning: null,
+    polymarketPlan: {
+      keyOddsLevel: direction === "NO WATCH" ? noPrice : yesPrice,
+      triggerOddsMove: "3-5 cent move with real volume and fresh news.",
+      newsConfirmation: opportunity.actionPlan.plainEnglish.whyItMattersToday,
+      yesPlan: `YES plan: only paper-track YES if news makes YES more likely and rules are clear. Current YES: ${yesPrice}.`,
+      noPlan: `NO plan: only paper-track NO if news weakens YES or rules make YES harder. Current NO: ${noPrice}.`,
+      skipRule: "Skip if rules are vague, liquidity is low, spread is wide, or odds already ran too far.",
+      maxRisk: "$2-$5"
+    }
+  };
+}
+
+function makeLiveCalloutPlans(stockIdeas: UnifiedOpportunity[], polymarketIdeas: UnifiedOpportunity[]) {
+  const stockCallouts = stockIdeas.slice(0, 5).map(makeStockCallout);
+  const polymarketCallouts = polymarketIdeas.slice(0, 5).map(makePolymarketCallout);
+  const includeFuturesWatch = stockIdeas.some((item) => ["QQQ", "SPY", "NVDA", "TSLA"].includes(item.symbol));
+  return includeFuturesWatch ? [...stockCallouts, makeFuturesWatchCallout(), ...polymarketCallouts] : [...stockCallouts, ...polymarketCallouts];
+}
+
 export function buildDailyReport(
   reportType: DailyReportType,
   engine: OpportunityEngineResponse,
@@ -177,6 +339,7 @@ export function buildDailyReport(
       .map(makeLongTermIdea),
     topPolymarketIdeas: polymarketIdeas.slice(0, 5).map(makePolymarketIdea),
     hourlyPolymarketWatchlist: polymarketIdeas.slice(0, 5).map(makeHourlyWatch),
+    liveCalloutPlans: makeLiveCalloutPlans(stockIdeas, polymarketIdeas),
     skippedAvoidList: avoid.length ? avoid : ["Do not trade unclear setups, low-confidence ideas, or markets where you cannot explain the rules."],
     oneSentencePlan: "Paper-track only the clearest idea in each section; skip anything with unclear rules, weak catalyst, or price drift.",
     telegram: {
@@ -202,6 +365,9 @@ export function formatDailyTelegram(report: SavedDailyReport) {
   const polymarket = report.topPolymarketIdeas.slice(0, 3).map((idea, index) =>
     `${index + 1}. ${idea.title} - ${idea.actionLabel}\nYES means: ${idea.yesMeans}\nNO means: ${idea.noMeans}\nMax risk: ${idea.suggestedMaxRisk} from $50 account`
   );
+  const callouts = (report.liveCalloutPlans ?? []).slice(0, 3).map((plan, index) =>
+    `${index + 1}. ${plan.title}\nKey level: ${plan.keyLevel}\nTrigger: ${plan.trigger}\nEntry: ${plan.entryZone}\nWrong if: ${plan.stopInvalidation}\nTarget 1: ${plan.target1}\nTarget 2: ${plan.target2}\nDo nothing if: ${plan.doNothingCondition}`
+  );
 
   return [
     `📡 ${report.title.toUpperCase()}`,
@@ -211,6 +377,8 @@ export function formatDailyTelegram(report: SavedDailyReport) {
     longTerm.length ? longTerm.join("\n\n") : "No long-term watchlist ideas returned.",
     "POLYMARKET:",
     polymarket.length ? polymarket.join("\n\n") : "No Polymarket candidates. Watch only.",
+    "LIVE CALLOUT STYLE PLANS:",
+    callouts.length ? callouts.join("\n\n") : "No conditional callouts generated. Watch only.",
     "DO NOT TOUCH TODAY:",
     report.skippedAvoidList.map((item) => `- ${item}`).join("\n"),
     "Research only. Manual approval only."

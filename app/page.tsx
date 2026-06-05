@@ -27,6 +27,7 @@ import type {
   AlertResponse,
   CrossMarketInsight,
   IntelligenceReport,
+  LiveCalloutPlan,
   MacroRiskEvent,
   OpportunityEngineResponse,
   PersistedAppState,
@@ -66,8 +67,9 @@ import {
 
 type Tab =
   | "Top Opportunities"
-  | "Today's Action Plan"
+  | "Daily Playbook"
   | "Action Plans"
+  | "Callout Feed"
   | "Saved Reports"
   | "Stock Scanner"
   | "Polymarket Scanner"
@@ -116,8 +118,9 @@ type BlobDiagnostics = {
 
 const tabs: Tab[] = [
   "Top Opportunities",
-  "Today's Action Plan",
+  "Daily Playbook",
   "Action Plans",
+  "Callout Feed",
   "Saved Reports",
   "Stock Scanner",
   "Polymarket Scanner",
@@ -814,11 +817,14 @@ export default function Home() {
             alertStatus={opportunityAlertStatus}
           />
         ) : null}
-        {activeTab === "Today's Action Plan" ? (
+        {activeTab === "Daily Playbook" ? (
           <TodayActionPlanPanel report={savedReports?.reports[0] ?? null} beginnerMode={beginnerMode} loading={loading === "opportunity"} onSaveReport={() => saveManualReport("morning")} />
         ) : null}
         {activeTab === "Action Plans" ? (
           <ActionPlansPanel engine={engine} loading={loading === "opportunity"} onRun={runOpportunityEngineNow} />
+        ) : null}
+        {activeTab === "Callout Feed" ? (
+          <CalloutFeedPanel reports={savedReports?.reports ?? []} />
         ) : null}
         {activeTab === "Saved Reports" ? (
           <SavedReportsPanel
@@ -1022,7 +1028,7 @@ function TodayActionPlanPanel({
 }) {
   return (
     <section className="grid gap-4">
-      <ScannerHeader title="Today's Action Plan" subtitle="Daily command center for Robinhood and Polymarket research. Manual approval only." onRun={onSaveReport} loading={loading} />
+      <ScannerHeader title="Daily Playbook" subtitle="Daily command center for Robinhood and Polymarket research. Manual approval only." onRun={onSaveReport} loading={loading} />
       {beginnerMode ? <Info title="Beginner Mode" text="Scores mean priority, not profit. Risk means how easily the idea can go wrong. Stop or invalidation means the reason to stop tracking the idea." /> : null}
       {!report ? <EmptyState text="No saved report yet. Run Save Report to create today's action plan." /> : null}
       {report ? (
@@ -1047,6 +1053,7 @@ function TodayActionPlanPanel({
               <List title="$50 compounding watch plan" items={report.topPolymarketIdeas[0].compoundingPlan} />
             </div>
           ) : null}
+          <LiveCalloutSection plans={report.liveCalloutPlans ?? []} />
           <List title="Polymarket Hourly Watchlist" items={report.hourlyPolymarketWatchlist.map((item) => `${item.marketTitle}: ${item.whyCheckThisHour} YES moves if: ${item.yesMover} NO moves if: ${item.noMover} Alert trigger: ${item.alertTrigger} ${item.riskNote}`)} />
           <List title="Do not touch today" items={report.skippedAvoidList} />
         </div>
@@ -1057,6 +1064,108 @@ function TodayActionPlanPanel({
 
 function DailySection({ title, items }: { title: string; items: string[] }) {
   return <List title={title} items={items.length ? items : ["No ideas saved for this section yet."]} />;
+}
+
+function calloutStatus(plan: LiveCalloutPlan, reportTimestamp?: string): LiveCalloutPlan["status"] {
+  const timestamp = reportTimestamp ?? plan.generatedAt;
+  const ageMs = Date.now() - new Date(timestamp).getTime();
+  if (Number.isFinite(ageMs) && ageMs > 24 * 60 * 60 * 1000) return "Expired";
+  return plan.status;
+}
+
+function LiveCalloutSection({ plans }: { plans: LiveCalloutPlan[] }) {
+  return (
+    <section className="grid gap-4">
+      <div className="rounded-md border border-terminal-line bg-terminal-panel p-4">
+        <h2 className="text-lg font-semibold text-white">LIVE CALLOUT STYLE PLANS</h2>
+        <p className="mt-2 text-sm text-terminal-muted">Conditional paper plans only. No auto-trading, no guaranteed profit, manual approval required.</p>
+      </div>
+      {plans.length ? (
+        <div className="grid gap-4">
+          {plans.map((plan) => <LiveCalloutCard key={plan.id} plan={plan} />)}
+        </div>
+      ) : (
+        <EmptyState text="No conditional callout plans saved yet. Save a Morning report to generate them." />
+      )}
+    </section>
+  );
+}
+
+function LiveCalloutCard({ plan, reportTimestamp }: { plan: LiveCalloutPlan; reportTimestamp?: string }) {
+  const status = calloutStatus(plan, reportTimestamp);
+  return (
+    <article className="rounded-md border border-terminal-line bg-terminal-panel p-4 shadow-glow">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h3 className="text-lg font-semibold text-white">{plan.title}</h3>
+          <p className="mt-1 text-sm text-terminal-muted">{plan.market} · {plan.direction}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <span className={badgeClass(status === "Waiting" ? "yellow" : status === "Triggered" ? "green" : "red")}>{status}</span>
+          {plan.marketType === "futures-watch" ? <span className={badgeClass("red")}>FUTURES WATCH ONLY</span> : null}
+        </div>
+      </div>
+      <div className="mt-4 grid gap-4 lg:grid-cols-3">
+        <Info title="Key level" text={plan.keyLevel} />
+        <Info title="Trigger" text={plan.trigger} />
+        <Info title="Entry zone" text={plan.entryZone} />
+        <Info title="Stop / invalidation" text={plan.stopInvalidation} />
+        <Info title="Target 1" text={plan.target1} />
+        <Info title="Target 2" text={plan.target2} />
+        <Info title="Volume condition" text={plan.volumeCondition} />
+        <Info title="Do-nothing rule" text={plan.doNothingCondition} />
+        <Info title="Beginner translation" text={plan.beginnerTranslation} />
+      </div>
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <List title="Confirmation" items={plan.confirmation} />
+        {plan.polymarketPlan ? (
+          <List
+            title="Polymarket callout plan"
+            items={[
+              `Key odds level: ${plan.polymarketPlan.keyOddsLevel}`,
+              `Trigger odds move: ${plan.polymarketPlan.triggerOddsMove}`,
+              `News confirmation: ${plan.polymarketPlan.newsConfirmation}`,
+              plan.polymarketPlan.yesPlan,
+              plan.polymarketPlan.noPlan,
+              `Skip rule: ${plan.polymarketPlan.skipRule}`,
+              `Max risk: ${plan.polymarketPlan.maxRisk} from $50 account.`
+            ]}
+          />
+        ) : (
+          <List title="Robinhood steps" items={plan.robinhoodSteps} />
+        )}
+      </div>
+      {plan.futuresWarning ? <WarningList items={[plan.futuresWarning]} /> : null}
+    </article>
+  );
+}
+
+function CalloutFeedPanel({ reports }: { reports: SavedDailyReport[] }) {
+  const plans = reports.flatMap((report) => (report.liveCalloutPlans ?? []).map((plan) => ({ plan, reportTimestamp: report.timestamp, reportTitle: report.title })));
+  return (
+    <section className="grid gap-4">
+      <div className="rounded-md border border-terminal-line bg-terminal-panel p-4">
+        <h2 className="text-lg font-semibold text-white">Callout Feed</h2>
+        <p className="mt-2 text-sm text-terminal-muted">Recent generated conditional plans. Status is not live execution; it is a research tracker.</p>
+      </div>
+      {plans.length ? (
+        <div className="grid gap-4">
+          {plans.slice(0, 30).map(({ plan, reportTimestamp, reportTitle }) => (
+            <div key={`${reportTimestamp}-${plan.id}`} className="grid gap-2">
+              <div className="flex flex-wrap items-center gap-2 text-sm text-terminal-muted">
+                <span className={badgeClass("blue")}>{reportTitle}</span>
+                <span>{new Date(reportTimestamp).toLocaleString()}</span>
+                <span className={badgeClass(calloutStatus(plan, reportTimestamp) === "Expired" ? "red" : "yellow")}>{calloutStatus(plan, reportTimestamp)}</span>
+              </div>
+              <LiveCalloutCard plan={plan} reportTimestamp={reportTimestamp} />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <EmptyState text="No callouts saved yet. Save a report from Daily Playbook or wait for a scheduled report." />
+      )}
+    </section>
+  );
 }
 
 function SavedReportsPanel({

@@ -396,6 +396,39 @@ export type PolymarketHourlyWatch = {
   riskNote: string;
 };
 
+export type LiveCalloutStatus = "Waiting" | "Triggered" | "Invalidated" | "Expired";
+
+export type LiveCalloutPlan = {
+  id: string;
+  generatedAt: string;
+  marketType: "stock" | "polymarket" | "futures-watch";
+  market: string;
+  title: string;
+  direction: "LONG WATCH" | "SHORT WATCH" | "NO TRADE" | "YES WATCH" | "NO WATCH";
+  status: LiveCalloutStatus;
+  keyLevel: string;
+  trigger: string;
+  confirmation: string[];
+  entryZone: string;
+  stopInvalidation: string;
+  target1: string;
+  target2: string;
+  volumeCondition: string;
+  doNothingCondition: string;
+  beginnerTranslation: string;
+  robinhoodSteps: string[];
+  futuresWarning: string | null;
+  polymarketPlan: {
+    keyOddsLevel: string;
+    triggerOddsMove: string;
+    newsConfirmation: string;
+    yesPlan: string;
+    noPlan: string;
+    skipRule: string;
+    maxRisk: "$2-$5";
+  } | null;
+};
+
 export type SavedDailyReport = {
   id: string;
   timestamp: string;
@@ -405,6 +438,7 @@ export type SavedDailyReport = {
   topLongTermIdeas: LongTermIdea[];
   topPolymarketIdeas: PolymarketActionIdea[];
   hourlyPolymarketWatchlist: PolymarketHourlyWatch[];
+  liveCalloutPlans: LiveCalloutPlan[];
   skippedAvoidList: string[];
   oneSentencePlan: string;
   telegram: {
