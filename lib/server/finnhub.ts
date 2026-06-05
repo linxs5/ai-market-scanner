@@ -1,4 +1,4 @@
-import type { NewsItem, Quote } from "@/lib/shared/types";
+import type { Candle, NewsItem, Quote } from "@/lib/shared/types";
 import { env } from "./env";
 
 const FINNHUB_BASE_URL = "https://finnhub.io/api/v1";
@@ -36,6 +36,26 @@ type FinnhubEarningsCalendarItem = {
 type FinnhubEarningsCalendarResponse = {
   earningsCalendar?: FinnhubEarningsCalendarItem[];
 };
+
+type FinnhubCandleResponse = {
+  s?: string;
+  t?: number[];
+  o?: number[];
+  h?: number[];
+  l?: number[];
+  c?: number[];
+  v?: number[];
+};
+
+function timeframeToFinnhubResolution(timeframe: string) {
+  const normalized = timeframe.toLowerCase();
+  if (normalized === "5m") return "5";
+  if (normalized === "15m") return "15";
+  if (normalized === "1h") return "60";
+  if (normalized === "4h") return "240";
+  if (normalized === "1d") return "D";
+  return "15";
+}
 
 async function finnhubFetch<T>(path: string): Promise<T> {
   if (!env.finnhubKey) {
@@ -111,4 +131,25 @@ export async function fetchFinnhubEarningsCalendar(from: string, to: string, tic
   if (ticker) params.set("symbol", ticker);
   const raw = await finnhubFetch<FinnhubEarningsCalendarResponse>(`/calendar/earnings?${params.toString()}`);
   return raw.earningsCalendar ?? [];
+}
+
+export async function fetchFinnhubCandles(ticker: string, timeframe: string): Promise<Candle[]> {
+  const to = Math.floor(Date.now() / 1000);
+  const from = to - (timeframe.toLowerCase().endsWith("d") ? 180 * 86_400 : 14 * 86_400);
+  const resolution = timeframeToFinnhubResolution(timeframe);
+  const raw = await finnhubFetch<FinnhubCandleResponse>(
+    `/stock/candle?symbol=${encodeURIComponent(ticker)}&resolution=${resolution}&from=${from}&to=${to}`
+  );
+
+  if (raw.s !== "ok" || !raw.t?.length) return [];
+  return raw.t
+    .map((timestamp, index) => ({
+      timestamp,
+      open: Number(raw.o?.[index]),
+      high: Number(raw.h?.[index]),
+      low: Number(raw.l?.[index]),
+      close: Number(raw.c?.[index]),
+      volume: Number(raw.v?.[index] ?? 0)
+    }))
+    .filter((item) => [item.timestamp, item.open, item.high, item.low, item.close].every(Number.isFinite));
 }

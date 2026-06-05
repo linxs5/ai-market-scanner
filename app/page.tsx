@@ -33,6 +33,8 @@ import type {
   PersistedAppState,
   PolymarketOpportunity,
   PolymarketScanResponse,
+  PriceActionAnalyzerResponse,
+  ConditionalCalloutPlan,
   SavedDailyReport,
   SavedReportsResponse,
   ScheduleDiagnosticsRecord,
@@ -70,6 +72,7 @@ type Tab =
   | "Daily Playbook"
   | "Action Plans"
   | "Callout Feed"
+  | "Price Action Analyzer"
   | "Saved Reports"
   | "Stock Scanner"
   | "Polymarket Scanner"
@@ -121,6 +124,7 @@ const tabs: Tab[] = [
   "Daily Playbook",
   "Action Plans",
   "Callout Feed",
+  "Price Action Analyzer",
   "Saved Reports",
   "Stock Scanner",
   "Polymarket Scanner",
@@ -178,11 +182,15 @@ export default function Home() {
   const [crossMarket, setCrossMarket] = useState<CrossMarketResponse | null>(null);
   const [setup, setSetup] = useState<SetupCheckResponse | null>(null);
   const [savedReports, setSavedReports] = useState<SavedReportsResponse | null>(null);
+  const [priceAction, setPriceAction] = useState<PriceActionAnalyzerResponse | null>(null);
+  const [priceActionTicker, setPriceActionTicker] = useState("QQQ");
+  const [priceActionTimeframe, setPriceActionTimeframe] = useState("15m");
   const [blobDiagnostics, setBlobDiagnostics] = useState<BlobDiagnostics | null>(null);
   const [scheduleDiagnostics, setScheduleDiagnostics] = useState<ScheduleDiagnosticsRecord | null>(null);
   const [paperTrades, setPaperTrades] = useState<PaperTrade[]>(loadPaperTrades);
   const [feed, setFeed] = useState<ResearchFeedItem[]>(loadResearchFeed);
   const [loading, setLoading] = useState<"stock" | "polymarket" | "cross" | "alert" | "opportunity" | null>(null);
+  const [analyzerLoading, setAnalyzerLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [alertResult, setAlertResult] = useState<AlertResponse | null>(null);
   const [sendOpportunityTelegram, setSendOpportunityTelegram] = useState(false);
@@ -711,6 +719,26 @@ export default function Home() {
     }
   }
 
+  async function runPriceActionNow() {
+    setAnalyzerLoading(true);
+    setError(null);
+    setActiveTab("Price Action Analyzer");
+    try {
+      const response = await fetch("/.netlify/functions/run-price-action-analyzer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticker: priceActionTicker, timeframe: priceActionTimeframe })
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? "Price action analyzer failed.");
+      setPriceAction(payload as PriceActionAnalyzerResponse);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Price action analyzer failed.");
+    } finally {
+      setAnalyzerLoading(false);
+    }
+  }
+
   async function sendTestAlert() {
     setLoading("alert");
     setError(null);
@@ -764,6 +792,43 @@ export default function Home() {
 
   function updateOutcome(id: string, status: PaperTradeOutcome) {
     persistTrades(paperTrades.map((trade) => (trade.id === id ? { ...trade, status } : trade)));
+  }
+
+  async function addPriceActionToLiveWatch(plan: ConditionalCalloutPlan) {
+    addFeedItem({
+      source: "alert",
+      symbol: plan.market,
+      score: Math.round((plan.rrRatio ?? 0) * 10),
+      summary: `${plan.title}: ${plan.trigger}`,
+      status: "follow-up",
+      paperTradeAction: "live watch",
+      followUpNeeded: plan.stopInvalidation
+    });
+
+    if (sendOpportunityTelegram) {
+      await fetch("/.netlify/functions/send-alert", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: `Live watch added: ${plan.market}`,
+          message: [
+            plan.title,
+            `Key level: ${plan.keyLevel}`,
+            `Trigger: ${plan.trigger}`,
+            `Entry zone: ${plan.entryZone}`,
+            `Stop: ${plan.stopInvalidation}`,
+            `Target 1: ${plan.target1}`,
+            `Target 2: ${plan.target2}`,
+            `Beginner translation: ${plan.beginnerTranslation}`,
+            `Robinhood steps: ${plan.robinhoodSteps.join(" | ")}`,
+            "Research only. Manual approval only. Paper trade first."
+          ].join("\n\n"),
+          severity: "medium",
+          alertType: "stock mover",
+          channels: ["telegram"]
+        })
+      }).catch(() => null);
+    }
   }
 
   return (
@@ -825,6 +890,18 @@ export default function Home() {
         ) : null}
         {activeTab === "Callout Feed" ? (
           <CalloutFeedPanel reports={savedReports?.reports ?? []} />
+        ) : null}
+        {activeTab === "Price Action Analyzer" ? (
+          <PriceActionAnalyzerPanel
+            result={priceAction}
+            ticker={priceActionTicker}
+            timeframe={priceActionTimeframe}
+            loading={analyzerLoading}
+            onTicker={setPriceActionTicker}
+            onTimeframe={setPriceActionTimeframe}
+            onRun={runPriceActionNow}
+            onAddToLiveWatch={addPriceActionToLiveWatch}
+          />
         ) : null}
         {activeTab === "Saved Reports" ? (
           <SavedReportsPanel
@@ -1164,6 +1241,99 @@ function CalloutFeedPanel({ reports }: { reports: SavedDailyReport[] }) {
       ) : (
         <EmptyState text="No callouts saved yet. Save a report from Daily Playbook or wait for a scheduled report." />
       )}
+    </section>
+  );
+}
+
+function PriceActionAnalyzerPanel({
+  result,
+  ticker,
+  timeframe,
+  loading,
+  onTicker,
+  onTimeframe,
+  onRun,
+  onAddToLiveWatch
+}: {
+  result: PriceActionAnalyzerResponse | null;
+  ticker: string;
+  timeframe: string;
+  loading: boolean;
+  onTicker: (ticker: string) => void;
+  onTimeframe: (timeframe: string) => void;
+  onRun: () => void;
+  onAddToLiveWatch: (plan: ConditionalCalloutPlan) => void;
+}) {
+  const supported = ["QQQ", "SPY", "NVDA", "AMD", "TSLA", "PLTR", "MSFT", "GOOG"];
+  const timeframes = ["5m", "15m", "1h", "4h", "1d"];
+  const signal = result?.signal;
+  return (
+    <section className="grid gap-4">
+      <div className="rounded-md border border-terminal-line bg-terminal-panel p-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-white">Price Action Analyzer</h2>
+            <p className="mt-1 text-sm text-terminal-muted">Supply/demand zones, candle close confirmations, FVGs, and paper-only callouts. No auto-trading.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <select value={ticker} onChange={(event) => onTicker(event.target.value)} className="rounded-md border border-terminal-line bg-terminal-ink px-3 py-2 text-sm text-white">
+              {supported.map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+            <select value={timeframe} onChange={(event) => onTimeframe(event.target.value)} className="rounded-md border border-terminal-line bg-terminal-ink px-3 py-2 text-sm text-white">
+              {timeframes.map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+            <button onClick={onRun} disabled={loading} className="inline-flex items-center gap-2 rounded-md border border-terminal-line px-3 py-2 text-sm text-terminal-muted hover:text-white disabled:opacity-60">
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} Analyze
+            </button>
+          </div>
+        </div>
+      </div>
+      {!result && !loading ? <EmptyState text="Run the analyzer for QQQ or another supported stock/ETF proxy." /> : null}
+      {result?.error ? <ErrorBanner message={result.error} /> : null}
+      {result ? (
+        <>
+          <div className="grid gap-4 lg:grid-cols-4">
+            <Metric icon={<Gauge />} label="Ticker" value={result.ticker} />
+            <Metric icon={<Radio />} label="Timeframe" value={result.timeframe} />
+            <Metric icon={<LineChart />} label="Trend" value={signal?.trend ?? "Needs data"} />
+            <Metric icon={<ShieldAlert />} label="Data source" value={result.source} />
+          </div>
+          <WarningList items={result.warnings} />
+          {signal ? (
+            <div className="grid gap-4">
+              <div className="grid gap-4 lg:grid-cols-2">
+                <Info title="Last swing high" text={signal.lastSwingHigh ? `$${signal.lastSwingHigh.price.toFixed(2)}` : "No swing high found."} />
+                <Info title="Last swing low" text={signal.lastSwingLow ? `$${signal.lastSwingLow.price.toFixed(2)}` : "No swing low found."} />
+                <List title="Confirmed breakouts" items={signal.confirmedBreakouts} />
+                <List title="Failed breakouts" items={signal.failedBreakouts} />
+              </div>
+              <div className="grid gap-4 lg:grid-cols-3">
+                <List title="Active demand zones" items={signal.demandZones.map((zone) => `${zone.label}: $${zone.low.toFixed(2)}-$${zone.high.toFixed(2)} entry ${zone.entryZone}${zone.highProbability ? " · high probability FVG" : ""}`)} />
+                <List title="Active supply zones" items={signal.supplyZones.map((zone) => `${zone.label}: $${zone.low.toFixed(2)}-$${zone.high.toFixed(2)} entry ${zone.entryZone}${zone.highProbability ? " · high probability FVG" : ""}`)} />
+                <List title="Fair value gaps" items={signal.fairValueGaps.map((gap) => `${gap.type}: $${gap.low.toFixed(2)}-$${gap.high.toFixed(2)}`)} />
+              </div>
+              <div className="grid gap-4">
+                {result.calloutPlans.length ? (
+                  result.calloutPlans.map((plan) => (
+                    <div key={plan.id} className="grid gap-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex flex-wrap gap-2">
+                          {plan.safetyLabels.map((label) => <span key={label} className={badgeClass(label === "NO TRADE" || label === "HIGH RISK" ? "red" : "yellow")}>{label}</span>)}
+                          <span className={badgeClass("blue")}>RR {plan.rrRatio ?? "n/a"}</span>
+                        </div>
+                        <button onClick={() => onAddToLiveWatch(plan)} className="rounded-md border border-terminal-line px-3 py-2 text-sm text-terminal-muted hover:text-white">Add to Live Watch</button>
+                      </div>
+                      <LiveCalloutCard plan={plan} />
+                    </div>
+                  ))
+                ) : (
+                  <EmptyState text="No callout passed the 2.0 risk/reward filter. NO TRADE is the correct output." />
+                )}
+              </div>
+            </div>
+          ) : null}
+        </>
+      ) : null}
     </section>
   );
 }

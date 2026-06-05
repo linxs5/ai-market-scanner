@@ -44,6 +44,58 @@ export type Quote = {
   source: "finnhub" | "polygon";
 };
 
+export type Candle = {
+  timestamp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+};
+
+export type SwingPoint = {
+  index: number;
+  timestamp: number;
+  price: number;
+  type: "high" | "low";
+};
+
+export type SupplyDemandZone = {
+  id: string;
+  label: "DEMAND ZONE" | "SUPPLY ZONE";
+  high: number;
+  low: number;
+  midpoint: number;
+  entryZone: string;
+  stop: number;
+  target: number;
+  highProbability: boolean;
+  sourceIndex: number;
+};
+
+export type FairValueGap = {
+  id: string;
+  type: "bullish" | "bearish";
+  high: number;
+  low: number;
+  startIndex: number;
+  endIndex: number;
+};
+
+export type PriceActionSignal = {
+  ticker: string;
+  timeframe: string;
+  trend: "bullish" | "bearish" | "sideways";
+  lastSwingHigh: SwingPoint | null;
+  lastSwingLow: SwingPoint | null;
+  demandZones: SupplyDemandZone[];
+  supplyZones: SupplyDemandZone[];
+  fairValueGaps: FairValueGap[];
+  confirmedBreakouts: string[];
+  failedBreakouts: string[];
+  warnings: string[];
+};
+
 export type NewsItem = {
   id: string;
   ticker: string;
@@ -427,6 +479,26 @@ export type LiveCalloutPlan = {
     skipRule: string;
     maxRisk: "$2-$5";
   } | null;
+};
+
+export type ConditionalCalloutPlan = LiveCalloutPlan & {
+  safetyLabels: Array<"WATCH ONLY" | "PAPER TRADE ONLY" | "HIGH RISK" | "NO TRADE">;
+  rrRatio: number | null;
+  sourceZoneId: string | null;
+};
+
+export type PriceActionAnalyzerResponse = {
+  generatedAt: string;
+  ticker: string;
+  timeframe: string;
+  higherTimeframe: string;
+  lowerTimeframe: string;
+  source: "polygon" | "finnhub" | "none";
+  candles: Candle[];
+  signal: PriceActionSignal | null;
+  calloutPlans: ConditionalCalloutPlan[];
+  error: string | null;
+  warnings: string[];
 };
 
 export type SavedDailyReport = {
