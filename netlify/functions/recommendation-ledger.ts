@@ -22,12 +22,14 @@ const postSchema = z.object({
   clear: z.boolean().optional()
 });
 
+const ENDPOINT = "recommendation-ledger";
+
 export const handler: Handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return jsonResponse({});
-  if (!["GET", "POST", "DELETE"].includes(event.httpMethod)) return errorResponse("Method not allowed.", 405);
-  connectBlobs(event);
 
   try {
+    if (!["GET", "POST", "DELETE"].includes(event.httpMethod)) return errorResponse("Method not allowed.", 405, null, ENDPOINT);
+    connectBlobs(event);
     if (event.httpMethod === "DELETE") {
       return jsonResponse({
         ok: true,
@@ -43,7 +45,7 @@ export const handler: Handler = async (event) => {
     }
 
     const parsed = postSchema.safeParse(JSON.parse(event.body || "{}"));
-    if (!parsed.success) return errorResponse("Invalid recommendation ledger payload.", 400, parsed.error.flatten());
+    if (!parsed.success) return errorResponse("Invalid recommendation ledger payload.", 400, parsed.error.flatten(), ENDPOINT);
     if (parsed.data.clear) {
       const recommendations = await saveRecommendationLedger([]);
       return jsonResponse({ ok: true, storageSource: "server", recommendations, analytics: analyzeRecommendationLedger(recommendations) });
@@ -57,6 +59,8 @@ export const handler: Handler = async (event) => {
   } catch (error) {
     return jsonResponse({
       ok: false,
+      endpoint: ENDPOINT,
+      timestamp: new Date().toISOString(),
       storageSource: "local fallback",
       recommendations: [],
       analytics: analyzeRecommendationLedger([]),

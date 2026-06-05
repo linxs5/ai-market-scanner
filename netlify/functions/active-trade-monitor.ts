@@ -7,6 +7,8 @@ import { runPolymarketScan } from "../../lib/server/polymarket";
 import { jsonResponse } from "../../lib/server/http";
 import { loadRecommendationLedger, saveRecommendationLedger } from "../../lib/server/recommendation-ledger";
 
+const ENDPOINT = "active-trade-monitor";
+
 function numberFromText(value: string) {
   const match = value.match(/([0-9]+(?:\.[0-9]+)?)/);
   return match ? Number(match[1]) : null;
@@ -86,62 +88,75 @@ async function alertStateChange(item: RecommendationLedgerItem, nextStatus: Reco
 
 export const handler: Handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return jsonResponse({});
-  connectBlobs(event);
 
-  const ledger = await loadRecommendationLedger();
-  const open = ledger.filter((item) => ["recommended", "waiting_for_trigger", "user_entered", "triggered", "user_skipped"].includes(item.status));
-  const updated: RecommendationLedgerItem[] = [];
-  const changes: Array<{ id: string; from: RecommendationStatus; to: RecommendationStatus }> = [];
+  try {
+    connectBlobs(event);
 
-  for (const item of ledger) {
-    if (!open.some((candidate) => candidate.id === item.id)) {
-      updated.push(item);
-      continue;
-    }
+    const ledger = await loadRecommendationLedger();
+    const open = ledger.filter((item) => ["recommended", "waiting_for_trigger", "user_entered", "triggered", "user_skipped"].includes(item.status));
+    const updated: RecommendationLedgerItem[] = [];
+    const changes: Array<{ id: string; from: RecommendationStatus; to: RecommendationStatus }> = [];
 
-    let nextStatus = item.status;
-    let currentPriceOrOdds = item.autoPaperTrade?.currentPriceOrOdds ?? item.currentPriceOrOddsAtRecommendation;
-    if (item.marketType === "stock") {
-      const quote = await fetchQuote(item.tickerOrMarket).catch(() => null);
-      if (quote) {
-        currentPriceOrOdds = `$${quote.price.toFixed(2)}`;
-        nextStatus = nextStockStatus(item, quote.price);
+    for (const item of ledger) {
+      if (!open.some((candidate) => candidate.id === item.id)) {
+        updated.push(item);
+        continue;
       }
-    } else {
-      nextStatus = await maybePolymarketStatus(item);
-      currentPriceOrOdds = "Latest Polymarket odds checked when available.";
+
+      let nextStatus = item.status;
+      let currentPriceOrOdds = item.autoPaperTrade?.currentPriceOrOdds ?? item.currentPriceOrOddsAtRecommendation;
+      if (item.marketType === "stock") {
+        const quote = await fetchQuote(item.tickerOrMarket).catch(() => null);
+        if (quote) {
+          currentPriceOrOdds = `$${quote.price.toFixed(2)}`;
+          nextStatus = nextStockStatus(item, quote.price);
+        }
+      } else {
+        nextStatus = await maybePolymarketStatus(item);
+        currentPriceOrOdds = "Latest Polymarket odds checked when available.";
+      }
+
+      const checked = {
+        ...item,
+        status: nextStatus,
+        lastCheckedAt: new Date().toISOString(),
+        autoPaperTrade: item.autoPaperTrade
+          ? {
+              ...item.autoPaperTrade,
+              currentPriceOrOdds,
+              theoreticalResult:
+                nextStatus === "target_hit"
+                  ? "Paper target hit."
+                  : nextStatus === "stopped_out"
+                    ? "Paper stop/invalidation hit."
+                    : nextStatus === "triggered"
+                      ? "Trigger hit. Paper trade is now active."
+                      : nextStatus === "expired"
+                        ? "Expired before a clean trigger."
+                        : item.autoPaperTrade.theoreticalResult
+            }
+          : item.autoPaperTrade
+      };
+      if (nextStatus !== item.status) {
+        changes.push({ id: item.id, from: item.status, to: nextStatus });
+        await alertStateChange(checked, nextStatus).catch(() => null);
+        updated.push({ ...checked, lastAlertedStatus: nextStatus });
+      } else {
+        updated.push(checked);
+      }
     }
 
-    const checked = {
-      ...item,
-      status: nextStatus,
-      lastCheckedAt: new Date().toISOString(),
-      autoPaperTrade: item.autoPaperTrade
-        ? {
-            ...item.autoPaperTrade,
-            currentPriceOrOdds,
-            theoreticalResult:
-              nextStatus === "target_hit"
-                ? "Paper target hit."
-                : nextStatus === "stopped_out"
-                  ? "Paper stop/invalidation hit."
-                  : nextStatus === "triggered"
-                    ? "Trigger hit. Paper trade is now active."
-                    : nextStatus === "expired"
-                      ? "Expired before a clean trigger."
-                      : item.autoPaperTrade.theoreticalResult
-          }
-        : item.autoPaperTrade
-    };
-    if (nextStatus !== item.status) {
-      changes.push({ id: item.id, from: item.status, to: nextStatus });
-      await alertStateChange(checked, nextStatus).catch(() => null);
-      updated.push({ ...checked, lastAlertedStatus: nextStatus });
-    } else {
-      updated.push(checked);
-    }
+    const recommendations = await saveRecommendationLedger(updated);
+    return jsonResponse({ ok: true, checked: open.length, changes, recommendations });
+  } catch (error) {
+    return jsonResponse({
+      ok: false,
+      error: error instanceof Error ? error.message : "Active trade monitor failed.",
+      endpoint: ENDPOINT,
+      timestamp: new Date().toISOString(),
+      checked: 0,
+      changes: [],
+      recommendations: []
+    }, 500);
   }
-
-  const recommendations = await saveRecommendationLedger(updated);
-  return jsonResponse({ ok: true, checked: open.length, changes, recommendations });
 };

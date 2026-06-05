@@ -6,6 +6,8 @@ import { errorResponse, jsonResponse } from "../../lib/server/http";
 import { runOpportunityEngine } from "../../lib/server/opportunity-engine";
 import { appendRecommendations, loadRecommendationLedger, recommendationsFromEngine } from "../../lib/server/recommendation-ledger";
 
+const ENDPOINT = "run-opportunity-engine";
+
 async function sendAutoPaperCreatedAlert(item: RecommendationLedgerItem) {
   await sendAlert({
     title: `AUTO PAPER CREATED: ${item.tickerOrMarket}`,
@@ -28,10 +30,10 @@ async function sendAutoPaperCreatedAlert(item: RecommendationLedgerItem) {
 
 export const handler: Handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return jsonResponse({});
-  if (!["GET", "POST"].includes(event.httpMethod)) return errorResponse("Method not allowed.", 405);
-  connectBlobs(event);
 
   try {
+    if (!["GET", "POST"].includes(event.httpMethod)) return errorResponse("Method not allowed.", 405, null, ENDPOINT);
+    connectBlobs(event);
     const engine = await runOpportunityEngine();
     let ledgerSaved = false;
     let ledgerWarning: string | null = null;
@@ -52,6 +54,6 @@ export const handler: Handler = async (event) => {
     }
     return jsonResponse({ ...engine, recommendationLedger: { saved: ledgerSaved, warning: ledgerWarning } });
   } catch (error) {
-    return errorResponse("Opportunity engine failed.", 500, error instanceof Error ? error.message : error);
+    return errorResponse("Opportunity engine failed.", 500, error instanceof Error ? error.message : error, ENDPOINT);
   }
 };

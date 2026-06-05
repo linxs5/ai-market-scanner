@@ -1,4 +1,5 @@
 import type { MarketType, PolymarketOpportunity, SetupReport } from "@/lib/shared/types";
+import { safeJsonFetch } from "./safe-json-fetch";
 
 export type PaperTradeOutcome = "open" | "win" | "loss" | "breakeven" | "skipped";
 
@@ -57,9 +58,7 @@ export async function loadServerPaperTrades(): Promise<{ available: boolean; tra
   if (typeof window === "undefined") return { available: false, trades: [] };
 
   try {
-    const response = await fetch("/.netlify/functions/paper-trades");
-    if (!response.ok) return { available: false, trades: [], warning: "Paper trade server storage did not respond." };
-    return (await response.json()) as { available: boolean; trades: PaperTrade[]; warning?: string };
+    return await safeJsonFetch<{ available: boolean; trades: PaperTrade[]; warning?: string }>("/.netlify/functions/paper-trades");
   } catch (error) {
     return {
       available: false,
@@ -73,13 +72,11 @@ export async function saveServerPaperTrades(trades: PaperTrade[]): Promise<{ ava
   if (typeof window === "undefined") return { available: false };
 
   try {
-    const response = await fetch("/.netlify/functions/paper-trades", {
+    const payload = await safeJsonFetch<{ available: boolean; warning?: string }>("/.netlify/functions/paper-trades", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ trades })
     });
-    if (!response.ok) return { available: false, warning: "Paper trade server storage did not save." };
-    const payload = (await response.json()) as { available: boolean; warning?: string };
     return { available: payload.available, warning: payload.warning };
   } catch (error) {
     return {

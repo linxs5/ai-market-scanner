@@ -2,13 +2,15 @@ import type { Handler } from "@netlify/functions";
 import { errorResponse, jsonResponse } from "../../lib/server/http";
 import { runPolymarketScan } from "../../lib/server/polymarket";
 
+const ENDPOINT = "run-polymarket-scan";
+
 export const handler: Handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return jsonResponse({});
-  if (!["GET", "POST"].includes(event.httpMethod)) return errorResponse("Method not allowed.", 405);
 
   try {
+    if (!["GET", "POST"].includes(event.httpMethod)) return errorResponse("Method not allowed.", 405, null, ENDPOINT);
     return jsonResponse(await runPolymarketScan());
   } catch (error) {
-    return errorResponse("Polymarket scan failed.", 500, error instanceof Error ? error.message : error);
+    return errorResponse("Polymarket scan failed.", 500, error instanceof Error ? error.message : error, ENDPOINT);
   }
 };

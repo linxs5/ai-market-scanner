@@ -1,4 +1,5 @@
 import type { LearningAnalytics, RecommendationLedgerItem, RecommendationLedgerResponse } from "@/lib/shared/types";
+import { safeJsonFetch } from "./safe-json-fetch";
 
 const LEDGER_KEY = "market-intelligence-recommendation-ledger";
 
@@ -92,9 +93,7 @@ export function analyzeLocalRecommendationLedger(items: RecommendationLedgerItem
 
 export async function loadServerRecommendationLedger(): Promise<RecommendationLedgerResponse & { analytics: LearningAnalytics }> {
   try {
-    const response = await fetch("/.netlify/functions/recommendation-ledger");
-    if (!response.ok) throw new Error("Recommendation ledger fetch failed.");
-    const payload = (await response.json()) as RecommendationLedgerResponse & { analytics: LearningAnalytics };
+    const payload = await safeJsonFetch<RecommendationLedgerResponse & { analytics: LearningAnalytics }>("/.netlify/functions/recommendation-ledger");
     return { ...payload, recommendations: payload.recommendations.map(normalizeItem) };
   } catch (error) {
     const recommendations = loadLocalRecommendationLedger();
@@ -112,13 +111,11 @@ export async function saveRecommendationUpdate(id: string, update: Partial<Recom
   const local = loadLocalRecommendationLedger().map((item) => (item.id === id ? { ...item, ...update } : item));
   saveLocalRecommendationLedger(local);
   try {
-    const response = await fetch("/.netlify/functions/recommendation-ledger", {
+    const payload = await safeJsonFetch<RecommendationLedgerResponse & { analytics: LearningAnalytics }>("/.netlify/functions/recommendation-ledger", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ update: { id, update } })
     });
-    if (!response.ok) throw new Error("Recommendation ledger update failed.");
-    const payload = (await response.json()) as RecommendationLedgerResponse & { analytics: LearningAnalytics };
     const recommendations = payload.recommendations.map(normalizeItem);
     saveLocalRecommendationLedger(recommendations);
     return { ...payload, recommendations };

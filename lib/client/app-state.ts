@@ -1,4 +1,5 @@
 import type { AppStatePersistenceResponse, PersistedAppState } from "@/lib/shared/types";
+import { safeJsonFetch } from "./safe-json-fetch";
 
 const APP_STATE_KEY = "market-intelligence-app-state";
 
@@ -27,9 +28,7 @@ export async function loadServerAppState(): Promise<AppStatePersistenceResponse>
   if (typeof window === "undefined") return { available: false, state: null };
 
   try {
-    const response = await fetch("/.netlify/functions/app-state");
-    if (!response.ok) return { available: false, state: null, warning: "Saved app state did not respond." };
-    const payload = (await response.json()) as AppStatePersistenceResponse & { error?: string };
+    const payload = await safeJsonFetch<AppStatePersistenceResponse & { error?: string }>("/.netlify/functions/app-state");
     return {
       ...payload,
       warning: payload.warning ?? payload.error,
@@ -48,13 +47,11 @@ export async function saveServerAppState(state: PersistedAppState): Promise<AppS
   if (typeof window === "undefined") return { available: false, state: null };
 
   try {
-    const response = await fetch("/.netlify/functions/app-state", {
+    const payload = await safeJsonFetch<AppStatePersistenceResponse & { error?: string }>("/.netlify/functions/app-state", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...state, source: "server" })
     });
-    if (!response.ok) return { available: false, state: null, warning: "Saved app state did not save." };
-    const payload = (await response.json()) as AppStatePersistenceResponse & { error?: string };
     return { ...payload, warning: payload.warning ?? payload.error };
   } catch (error) {
     return {
@@ -69,9 +66,7 @@ export async function clearServerAppState(): Promise<AppStatePersistenceResponse
   if (typeof window === "undefined") return { available: false, state: null };
 
   try {
-    const response = await fetch("/.netlify/functions/app-state", { method: "DELETE" });
-    if (!response.ok) return { available: false, state: null, warning: "Saved app state did not clear." };
-    const payload = (await response.json()) as AppStatePersistenceResponse & { error?: string };
+    const payload = await safeJsonFetch<AppStatePersistenceResponse & { error?: string }>("/.netlify/functions/app-state", { method: "DELETE" });
     return { ...payload, warning: payload.warning ?? payload.error };
   } catch (error) {
     return {

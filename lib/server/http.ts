@@ -12,6 +12,6 @@ export function jsonResponse(body: unknown, statusCode = 200) {
   };
 }
 
-export function errorResponse(message: string, statusCode = 500, details?: unknown) {
-  return jsonResponse({ error: message, details }, statusCode);
+export function errorResponse(message: string, statusCode = 500, details?: unknown, endpoint = "unknown") {
+  return jsonResponse({ ok: false, error: message, endpoint, timestamp: new Date().toISOString(), details }, statusCode);
 }

@@ -74,6 +74,7 @@ import {
   saveLocalRecommendationLedger,
   saveRecommendationUpdate
 } from "@/lib/client/recommendation-ledger";
+import { safeJsonFetch } from "@/lib/client/safe-json-fetch";
 
 type Tab =
   | "Best Right Now"
@@ -333,11 +334,11 @@ export default function Home() {
   async function runDiagnostics() {
     try {
       const [blobResponse, scheduleResponse] = await Promise.all([
-        fetch("/.netlify/functions/blob-diagnostics"),
-        fetch("/.netlify/functions/schedule-diagnostics")
+        safeJsonFetch<BlobDiagnostics>("/.netlify/functions/blob-diagnostics"),
+        safeJsonFetch<ScheduleDiagnosticsRecord>("/.netlify/functions/schedule-diagnostics")
       ]);
-      if (blobResponse.ok) setBlobDiagnostics((await blobResponse.json()) as BlobDiagnostics);
-      if (scheduleResponse.ok) setScheduleDiagnostics((await scheduleResponse.json()) as ScheduleDiagnosticsRecord);
+      setBlobDiagnostics(blobResponse);
+      setScheduleDiagnostics(scheduleResponse);
     } catch {
       setBlobDiagnostics(null);
       setScheduleDiagnostics(null);
@@ -436,15 +437,13 @@ export default function Home() {
     await Promise.all([
       clearServerAppState(),
       saveServerPaperTrades([]),
-      fetch("/.netlify/functions/reports", { method: "DELETE" }).catch(() => null)
+      safeJsonFetch("/.netlify/functions/reports", { method: "DELETE" }).catch(() => null)
     ]);
   }
 
   async function checkSetup() {
     try {
-      const response = await fetch("/.netlify/functions/check-setup");
-      if (!response.ok) throw new Error("Setup check failed.");
-      setSetup((await response.json()) as SetupCheckResponse);
+      setSetup(await safeJsonFetch<SetupCheckResponse>("/.netlify/functions/check-setup"));
     } catch (caught) {
       setSetup({
         configured: {},
@@ -475,9 +474,7 @@ export default function Home() {
 
   async function loadSavedReportsNow() {
     try {
-      const response = await fetch("/.netlify/functions/reports");
-      if (!response.ok) throw new Error("Saved reports fetch failed.");
-      const reports = (await response.json()) as SavedReportsResponse;
+      const reports = await safeJsonFetch<SavedReportsResponse>("/.netlify/functions/reports");
       setSavedReports(reports);
       persistAppState({ savedReports: reports });
       await runDiagnostics();
@@ -490,13 +487,11 @@ export default function Home() {
     setLoading("opportunity");
     setError(null);
     try {
-      const response = await fetch("/.netlify/functions/reports", {
+      const payload = await safeJsonFetch<(SavedReportsResponse & { ok?: boolean; report?: SavedDailyReport; error?: string })>("/.netlify/functions/reports", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reportType })
       });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error ?? "Report save failed.");
       if (payload.ok === false && payload.report) {
         const fallbackReports: SavedReportsResponse = {
           reports: [payload.report as SavedDailyReport, ...(savedReports?.reports ?? [])].slice(0, 20),
@@ -538,10 +533,7 @@ export default function Home() {
     setError(null);
     setActiveTab("Stock Scanner");
     try {
-      const response = await fetch("/.netlify/functions/run-market-scan", { method: "POST" });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error ?? "Stock scan failed.");
-      const scan = payload as ScanResponse;
+      const scan = await safeJsonFetch<ScanResponse>("/.netlify/functions/run-market-scan", { method: "POST" });
       setStockScan(scan);
       persistAppState({ stockScan: scan, lastScanAt: scan.generatedAt });
       scan.setups.forEach((setupReport) =>
@@ -572,10 +564,7 @@ export default function Home() {
       warnings: []
     });
     try {
-      const response = await fetch("/.netlify/functions/run-opportunity-engine", { method: "POST" });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error ?? "Opportunity engine failed.");
-      const result = payload as OpportunityEngineResponse;
+      const result = await safeJsonFetch<OpportunityEngineResponse>("/.netlify/functions/run-opportunity-engine", { method: "POST" });
       const nextCrossMarket = {
         generatedAt: result.generatedAt,
         stockScan: result.stockScan,
@@ -673,7 +662,7 @@ export default function Home() {
 
     try {
       for (const opportunity of selected) {
-        const response = await fetch("/.netlify/functions/send-alert", {
+        const payload = await safeJsonFetch<AlertResponse & { error?: string }>("/.netlify/functions/send-alert", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -689,8 +678,6 @@ export default function Home() {
             channels: ["telegram"]
           })
         });
-        const payload = (await response.json()) as AlertResponse & { error?: string };
-        if (!response.ok) throw new Error(payload.error ?? "Telegram alert failed.");
         warnings.push(...payload.warnings);
         if (payload.sent) sentCount += 1;
       }
@@ -714,10 +701,7 @@ export default function Home() {
     setError(null);
     setActiveTab("Polymarket Scanner");
     try {
-      const response = await fetch("/.netlify/functions/run-polymarket-scan", { method: "POST" });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error ?? "Polymarket scan failed.");
-      const scan = payload as PolymarketScanResponse;
+      const scan = await safeJsonFetch<PolymarketScanResponse>("/.netlify/functions/run-polymarket-scan", { method: "POST" });
       setPolyScan(scan);
       persistAppState({ polymarketScan: scan, lastScanAt: scan.generatedAt });
       scan.opportunities.forEach((market) =>
@@ -743,10 +727,7 @@ export default function Home() {
     setError(null);
     setActiveTab("Cross-Market Opportunities");
     try {
-      const response = await fetch("/.netlify/functions/run-cross-market-scan", { method: "POST" });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error ?? "Cross-market scan failed.");
-      const nextCrossMarket = payload as CrossMarketResponse;
+      const nextCrossMarket = await safeJsonFetch<CrossMarketResponse>("/.netlify/functions/run-cross-market-scan", { method: "POST" });
       setCrossMarket(nextCrossMarket);
       persistAppState({ crossMarket: nextCrossMarket, lastScanAt: nextCrossMarket.generatedAt });
     } catch (caught) {
@@ -761,14 +742,12 @@ export default function Home() {
     setError(null);
     setActiveTab("Price Action Analyzer");
     try {
-      const response = await fetch("/.netlify/functions/run-price-action-analyzer", {
+      const payload = await safeJsonFetch<PriceActionAnalyzerResponse>("/.netlify/functions/run-price-action-analyzer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticker: priceActionTicker, timeframe: priceActionTimeframe })
       });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error ?? "Price action analyzer failed.");
-      setPriceAction(payload as PriceActionAnalyzerResponse);
+      setPriceAction(payload);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Price action analyzer failed.");
     } finally {
@@ -780,7 +759,7 @@ export default function Home() {
     setLoading("alert");
     setError(null);
     try {
-      const response = await fetch("/.netlify/functions/send-alert", {
+      const payload = await safeJsonFetch<AlertResponse>("/.netlify/functions/send-alert", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -791,9 +770,7 @@ export default function Home() {
           channels: ["telegram", "email", "sms"]
         })
       });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error ?? "Alert failed.");
-      setAlertResult(payload as AlertResponse);
+      setAlertResult(payload);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Alert failed.");
     } finally {
@@ -843,7 +820,7 @@ export default function Home() {
     });
 
     if (sendOpportunityTelegram) {
-      await fetch("/.netlify/functions/send-alert", {
+      await safeJsonFetch("/.netlify/functions/send-alert", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1733,7 +1710,7 @@ function ActiveTradesPanel({
 }) {
   const active = recommendations.filter((item) => ["waiting_for_trigger", "user_entered", "triggered", "recommended"].includes(item.status));
   async function runMonitor() {
-    await fetch("/.netlify/functions/active-trade-monitor", { method: "POST" }).catch(() => null);
+    await safeJsonFetch("/.netlify/functions/active-trade-monitor", { method: "POST" }).catch(() => null);
     await onRefresh();
   }
   return (
@@ -1766,7 +1743,7 @@ function AutoPaperTradesPanel({
     ["Good skip", autoPaper.filter((item) => item.status === "good_skip")]
   ] as const;
   async function runMonitor() {
-    await fetch("/.netlify/functions/active-trade-monitor", { method: "POST" }).catch(() => null);
+    await safeJsonFetch("/.netlify/functions/active-trade-monitor", { method: "POST" }).catch(() => null);
     await onRefresh();
   }
   return (

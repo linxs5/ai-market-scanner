@@ -4,6 +4,7 @@ import { connectBlobs, getBlobStore } from "../../lib/server/blob-storage";
 import { errorResponse, jsonResponse } from "../../lib/server/http";
 
 const APP_STATE_KEY = "latest-app-state";
+const ENDPOINT = "app-state";
 
 function appStateStore() {
   return getBlobStore("market-intelligence-app-state");
@@ -11,10 +12,10 @@ function appStateStore() {
 
 export const handler: Handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return jsonResponse({});
-  if (!["GET", "POST", "DELETE"].includes(event.httpMethod)) return errorResponse("Method not allowed.", 405);
-  connectBlobs(event);
 
   try {
+    if (!["GET", "POST", "DELETE"].includes(event.httpMethod)) return errorResponse("Method not allowed.", 405, null, ENDPOINT);
+    connectBlobs(event);
     const store = appStateStore();
 
     if (event.httpMethod === "GET") {
@@ -36,6 +37,8 @@ export const handler: Handler = async (event) => {
       available: false,
       fallback: "localStorage",
       state: null,
+      endpoint: ENDPOINT,
+      timestamp: new Date().toISOString(),
       error: error instanceof Error ? error.message : "Netlify Blob app-state storage is unavailable.",
       warning: error instanceof Error ? error.message : "Netlify Blob app-state storage is unavailable."
     });
