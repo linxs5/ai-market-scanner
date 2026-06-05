@@ -120,6 +120,7 @@ export const handler: Handler = async (event) => {
         ...item,
         status: nextStatus,
         lastCheckedAt: new Date().toISOString(),
+        lastChecked: new Date().toISOString(),
         autoPaperTrade: item.autoPaperTrade
           ? {
               ...item.autoPaperTrade,

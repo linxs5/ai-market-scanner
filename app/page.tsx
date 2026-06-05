@@ -1101,25 +1101,62 @@ function DirectExecutionPlanCard({ item, compact = false }: { item: Recommendati
         <span className={badgeClass(plan.label.includes("CANDIDATE") || plan.label.includes("BINARY") ? "green" : plan.label === "AVOID" ? "red" : "yellow")}>{plan.label}</span>
         <span className={badgeClass(item.executionPlanQuality === "elite" || item.executionPlanQuality === "strong" ? "green" : item.executionPlanQuality === "weak" ? "red" : "yellow")}>{item.executionPlanQuality}</span>
       </div>
+      <GlossaryRow />
       <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Info title="Readiness" text={`${plan.readinessLabel} (${item.executionReadinessScore}/100)`} />
+        <Info title="Urgency" text={`${plan.urgencyLevel}. ${plan.catalystCountdown}`} />
         <Info title="Direction" text={plan.direction} />
         <Info title="Current" text={plan.currentPriceOrOdds} />
-        <Info title="Entry zone" text={plan.entryZone} />
-        <Info title="Stop / invalidation" text={plan.stopOrInvalidation} />
-        <Info title="Target 1" text={plan.target1} />
-        <Info title="Target 2" text={plan.target2} />
+        <Info title="Entry zone" text={plan.exactEntry} />
+        <Info title="Stop / invalidation" text={plan.exactStop} />
+        <Info title="Target 1" text={plan.exactTarget1} />
+        <Info title="Target 2" text={plan.exactTarget2} />
+        <Info title="Risk / reward" text={`${plan.riskPerShare} risk, ${plan.rewardPerShare} reward, ${plan.riskRewardRatio}`} />
+        <Info title="Expected value" text={plan.expectedValueEstimate} />
         <Info title="Max paper risk" text={plan.maxPaperRisk} />
-        <Info title="Time horizon" text={plan.timeHorizon} />
+        <Info title="Next check" text={plan.nextSuggestedCheck} />
+      </div>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Info title="Entry Quality" text={`${item.readinessBreakdown.entryQuality}/25`} />
+        <Info title="Risk Definition" text={`${item.readinessBreakdown.riskDefinition}/25`} />
+        <Info title="Catalyst Quality" text={`${item.readinessBreakdown.catalystQuality}/25`} />
+        <Info title="Timing Quality" text={`${item.readinessBreakdown.timingQuality}/25`} />
       </div>
       {!compact ? (
         <div className="mt-3 grid gap-3 lg:grid-cols-2">
           <Info title="Plain English" text={plan.plainEnglish} />
           <Info title="Suggested paper size" text={plan.suggestedPaperPositionSize} />
-          <List title={item.marketType === "polymarket" ? "Exact Polymarket steps" : "Exact Robinhood steps"} items={steps.length ? steps : [plan.optionsUnavailableMessage]} />
+          <List
+            title={item.marketType === "polymarket" ? "Exact Polymarket steps" : "Exact Robinhood steps"}
+            items={item.executionReadinessScore >= 70 ? (steps.length ? steps : [plan.optionsUnavailableMessage]) : ["No execution instructions until readiness is ACTIONABLE or HIGH CONVICTION. Keep this as watch/prep only."]}
+          />
           <List title="Warnings" items={plan.warnings} />
         </div>
       ) : null}
       {plan.optionsUnavailableMessage ? <p className="mt-3 text-sm text-terminal-amber">{plan.optionsUnavailableMessage}</p> : null}
+    </div>
+  );
+}
+
+function GlossaryRow() {
+  const terms = [
+    ["stop loss", "A planned exit level where the idea is wrong."],
+    ["limit order", "An order that only fills at your chosen price or better."],
+    ["support", "A price area where buyers recently defended the stock."],
+    ["resistance", "A price area where sellers recently blocked the stock."],
+    ["catalyst", "A news/event reason that can move price or odds."],
+    ["risk/reward", "How much you risk compared with the possible gain."],
+    ["supply zone", "An area where sellers may appear."],
+    ["demand zone", "An area where buyers may appear."],
+    ["volatility", "How fast and wide price is moving."]
+  ] as const;
+  return (
+    <div className="mt-3 flex flex-wrap gap-2">
+      {terms.map(([term, definition]) => (
+        <span key={term} title={definition} className="cursor-help rounded border border-terminal-line px-2 py-1 text-xs text-terminal-muted">
+          {term}
+        </span>
+      ))}
     </div>
   );
 }
@@ -1133,16 +1170,18 @@ function BestRightNowPanel({
   onMark: (id: string, status: RecommendationLedgerItem["status"], userActuallyEntered?: RecommendationLedgerItem["userActuallyEntered"]) => void;
   onEntered: (item: RecommendationLedgerItem, realTrade: boolean) => void;
 }) {
-  const sorted = [...recommendations].sort((a, b) => b.learningAdjustment - a.learningAdjustment || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  const bestDay = sorted.find((item) => item.tradeCategory === "DAY_TRADE" && !["SKIP", "AVOID"].includes(item.recommendation));
+  const sorted = [...recommendations].sort((a, b) => b.executionReadinessScore - a.executionReadinessScore || b.learningAdjustment - a.learningAdjustment || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const bestDay = sorted.find((item) => item.tradeCategory === "DAY_TRADE" && item.executionReadinessScore >= 70 && !["SKIP", "AVOID"].includes(item.recommendation));
+  const bestSwing = sorted.find((item) => item.tradeCategory === "DAY_TRADE" && item.executionReadinessScore >= 40 && item.urgencyLevel !== "urgent" && !["SKIP", "AVOID"].includes(item.recommendation));
   const bestLong = sorted.find((item) => item.tradeCategory === "LONG_TERM");
-  const bestPoly = sorted.find((item) => item.tradeCategory === "POLYMARKET" && !["SKIP", "AVOID"].includes(item.recommendation));
+  const bestPoly = sorted.find((item) => item.tradeCategory === "POLYMARKET" && item.urgencyLevel === "urgent" && !["SKIP", "AVOID"].includes(item.recommendation)) ?? sorted.find((item) => item.tradeCategory === "POLYMARKET" && !["SKIP", "AVOID"].includes(item.recommendation));
   const bestWait = sorted.find((item) => item.recommendation === "WATCH");
   const avoid = sorted.find((item) => ["SKIP", "AVOID"].includes(item.recommendation) || item.riskLevel === "high");
   const cards = [
-    ["Best DAY TRADE watch", bestDay],
-    ["Best LONG-TERM idea", bestLong],
-    ["Best POLYMARKET idea", bestPoly],
+    ["Best Day Trade Right Now", bestDay],
+    ["Best Swing Trade Right Now", bestSwing],
+    ["Best Long-Term Investment Right Now", bestLong],
+    ["Urgent Polymarket Watch", bestPoly],
     ["Best WAIT setup", bestWait],
     ["Highest-risk avoid idea", avoid]
   ] as const;
@@ -1942,6 +1981,9 @@ function StockScanner({ scan, loading, onRun, onPaperTrade, setup }: { scan: Sca
 }
 
 function PolymarketScanner({ scan, loading, onRun, onPaperTrade }: { scan: PolymarketScanResponse | null; loading: boolean; onRun: () => void; onPaperTrade: (market: PolymarketOpportunity, status: PaperTradeOutcome) => void }) {
+  const urgent = (scan?.opportunities ?? [])
+    .filter((market) => (market.timeRemainingDays !== null && market.timeRemainingDays <= 1) || /urgent|today|live/i.test(market.catalyst))
+    .slice(0, 5);
   return (
     <section className="grid gap-4">
       <div className="grid gap-4 lg:grid-cols-4">
@@ -1953,9 +1995,52 @@ function PolymarketScanner({ scan, loading, onRun, onPaperTrade }: { scan: Polym
       <ScannerHeader title="Polymarket scanner" subtitle="Gamma events/markets plus Data API leaderboard. No wallet, private keys, or order placement." onRun={onRun} loading={loading} />
       {loading ? <LoadingState text="Fetching active events, markets, odds metadata, risk flags, and leaderboard..." /> : null}
       {!loading && !scan ? <EmptyState text="Run a Polymarket scan to find active public market research packets." /> : null}
+      {scan ? <UrgentPolymarketWatch markets={urgent} /> : null}
       {scan?.opportunities.map((market) => <PolymarketCard key={market.id} market={market} onPaperTrade={onPaperTrade} />)}
       {scan ? <SmartMoneyPanel scan={scan} /> : null}
       {scan ? <WarningList items={scan.warnings} /> : null}
+    </section>
+  );
+}
+
+function polymarketAction(market: PolymarketOpportunity) {
+  if (market.riskFlags.ambiguousWording || market.riskFlags.resolutionSourceRisk) return "AVOID";
+  if (market.riskLevel === "high") return "SKIP";
+  if (market.attentionPriority >= 80 && (market.yesPrice ?? 1) <= 0.65) return "PAPER YES";
+  if (market.attentionPriority >= 80 && (market.noPrice ?? 1) <= 0.65) return "PAPER NO";
+  if (market.attentionPriority >= 65) return "PREPARE";
+  return "WATCH";
+}
+
+function UrgentPolymarketWatch({ markets }: { markets: PolymarketOpportunity[] }) {
+  return (
+    <section className="grid gap-3 rounded-md border border-terminal-line bg-terminal-panel p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-lg font-semibold text-white">URGENT POLYMARKET WATCH</h2>
+        <span className={badgeClass(markets.length ? "green" : "yellow")}>{markets.length ? `${markets.length} active` : "none"}</span>
+      </div>
+      {!markets.length ? <EmptyState text="No today/live Polymarket market passed liquidity, movement, and clarity filters." /> : null}
+      {markets.map((market) => (
+        <article key={market.id} className="rounded-md border border-terminal-line bg-terminal-ink/60 p-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h3 className="font-semibold text-white">{market.question}</h3>
+              <p className="mt-1 text-sm text-terminal-muted">Event time: {market.endDate ? new Date(market.endDate).toLocaleString() : "Check market page"} · Action: {polymarketAction(market)}</p>
+            </div>
+            <span className={badgeClass(scoreTone(market.attentionPriority))}>priority {market.attentionPriority}</span>
+          </div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <Info title="YES / NO odds" text={market.currentConsensus} />
+            <Info title="Volume / liquidity" text={`Vol ${formatMoney(market.volume)} · Liq ${formatMoney(market.liquidity)}`} />
+            <Info title="Why odds are moving" text={market.catalyst} />
+            <Info title="Confidence / EV" text={`${market.confidence}. EV is only favorable if rules are clear, spread is tight, and odds still match.`} />
+            <Info title="What moves YES" text={market.whatWouldMoveIt[0] ?? market.yesCase} />
+            <Info title="What moves NO" text={market.noCase} />
+            <Info title="Max risk / profit plan" text="$2-$5 from a $50 account. Take paper profit after an 8-12 cent favorable move." />
+            <Info title="Exit / trap" text={`${market.invalidation} Trap: ${market.riskFlags.probableTrap}`} />
+          </div>
+        </article>
+      ))}
     </section>
   );
 }

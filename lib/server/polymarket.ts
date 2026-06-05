@@ -156,7 +156,7 @@ function classifyResearchCategory(text: string, tags: string[]) {
   if (includesAny(haystack, ["bitcoin", "crypto", "ethereum", "solana", "xrp", "coinbase", "kraken"])) return "crypto";
   if (includesAny(haystack, ["stock", "stocks", "ipo", "earnings", "nasdaq", "sp500", "s&p", "treasury", "finance", "market"])) return "financial markets";
   if (includesAny(haystack, ["war", "ceasefire", "tariff", "court", "trial", "approval", "regulation", "geopolitical"])) return "major current news";
-  if (includesAny(haystack, ["nhl", "nba", "nfl", "mlb", "soccer", "uefa", "stanley cup", "world cup", "super bowl", "sports"])) return "sports";
+  if (includesAny(haystack, ["nhl", "nba", "nfl", "mlb", "soccer", "uefa", "ufc", "fight", "match", "game", "stanley cup", "world cup", "super bowl", "sports"])) return "sports";
   return "general";
 }
 
@@ -228,15 +228,18 @@ async function scoreMarket(event: GammaEvent, market: GammaMarket, smartMoneyAva
   );
   const catalystStrength = detectCatalystStrength(text, volume24hr, oneDayPriceChange);
   const clarity = resolutionClarity(description, resolutionSource);
+  const resolvesToday = timeRemainingDays !== null && timeRemainingDays <= 1;
+  const imminent = timeRemainingDays !== null && timeRemainingDays <= 0.25;
   const timeAttractiveness =
-    timeRemainingDays === null ? 35 : timeRemainingDays < 1 ? 35 : timeRemainingDays <= 45 ? 85 : timeRemainingDays <= 180 ? 65 : 42;
+    timeRemainingDays === null ? 35 : imminent ? 100 : resolvesToday ? 94 : timeRemainingDays <= 3 ? 88 : timeRemainingDays <= 45 ? 78 : timeRemainingDays <= 180 ? 55 : 28;
   const crowdSignal = clamp(toNumber(event.competitive) * 75 + (smartMoneyAvailable ? 15 : 0) + Math.min(openInterest / 100_000, 10));
   const researchCategory = classifyResearchCategory(text, tagLabels);
-  const isFreshCatalyst = catalystStrength >= 55 || Math.abs(oneDayPriceChange ?? 0) >= 0.04 || Math.abs(priceHistoryChange ?? 0) >= 0.04;
+  const isFreshCatalyst = catalystStrength >= 55 || resolvesToday || Math.abs(oneDayPriceChange ?? 0) >= 0.04 || Math.abs(priceHistoryChange ?? 0) >= 0.04;
   const nearResolution = timeRemainingDays !== null && timeRemainingDays <= config.nearResolutionDays;
   const longDated = timeRemainingDays === null || timeRemainingDays > config.longDatedDays;
   const highLiquidity = liquidity >= config.highLiquidityMinimum && volume24hr >= config.highVolume24hMinimum;
   const clearEdge = clarity >= 70 && (spread === null || spread <= config.clearEdgeMaxSpread);
+  const sportsQualifiedNow = researchCategory === "sports" && highLiquidity && resolvesToday && isFreshCatalyst && clearEdge;
   const categoryBoost = categoryWeight(researchCategory, isFreshCatalyst, clearEdge, nearResolution, highLiquidity, longDated);
 
   const breakdown: PolymarketScoreBreakdown = {
@@ -262,8 +265,9 @@ async function scoreMarket(event: GammaEvent, market: GammaMarket, smartMoneyAva
       score +
         categoryBoost +
         (isFreshCatalyst ? config.freshCatalystAttentionBonus : config.staleCatalystAttentionPenalty) +
-        (nearResolution ? config.nearResolutionAttentionBonus : 0) +
-        (researchCategory === "sports" && !(highLiquidity && nearResolution && isFreshCatalyst && clearEdge) ? config.sportsAttentionPenalty : 0)
+        (imminent ? 18 : resolvesToday ? 14 : nearResolution ? config.nearResolutionAttentionBonus : 0) +
+        (Math.abs(oneDayPriceChange ?? priceHistoryChange ?? 0) >= 0.06 ? 8 : 0) +
+        (researchCategory === "sports" && !sportsQualifiedNow ? config.sportsAttentionPenalty - 10 : 0)
     )
   );
 
@@ -297,8 +301,8 @@ async function scoreMarket(event: GammaEvent, market: GammaMarket, smartMoneyAva
   if (resolutionSourceRisk) warnings.push("Resolution source is not explicitly listed.");
   if (ambiguousWording) warnings.push("Wording may depend on judgment or credible-reporting consensus.");
   if (market.umaResolutionStatus) warnings.push(`UMA status: ${market.umaResolutionStatus}.`);
-  if (researchCategory === "sports" && !(highLiquidity && nearResolution && isFreshCatalyst && clearEdge)) {
-    warnings.push("Sports future deprioritized: needs high liquidity, near resolution, fresh catalyst, and clear edge to rank highly.");
+  if (researchCategory === "sports" && !sportsQualifiedNow) {
+    warnings.push("Sports market deprioritized: include only if today/imminent/live with high liquidity, fresh movement, and clear rules.");
   }
 
   const missingDataPoints = [yesPrice, noPrice, spread, oneDayPriceChange, priceHistoryChange].filter((value) => value === null).length;
@@ -345,12 +349,16 @@ async function scoreMarket(event: GammaEvent, market: GammaMarket, smartMoneyAva
     dataConfidence,
     riskLevel,
     riskFlags,
-    catalyst: catalystStrength >= 55 ? "High public activity and/or catalyst language detected." : "No strong external catalyst detected from metadata alone.",
+    catalyst: resolvesToday
+      ? "URGENT POLYMARKET WATCH: event resolves today or very soon with active odds/liquidity checks required."
+      : catalystStrength >= 55
+        ? "High public activity and/or catalyst language detected."
+        : "No strong external catalyst detected from metadata alone.",
     currentConsensus,
     yesCase: "YES research case: fresh public evidence could make the listed condition more likely before expiry.",
     noCase: "NO research case: the condition may fail, already be priced in, or rely on ambiguous reporting/resolution criteria.",
     whatWouldMoveIt: [
-      "Official source updates related to the market question.",
+      resolvesToday ? "Today/live event update from the official resolution source." : "Official source updates related to the market question.",
       "Credible breaking news that directly changes the probability.",
       "Large odds move with matching volume and tight spreads."
     ],

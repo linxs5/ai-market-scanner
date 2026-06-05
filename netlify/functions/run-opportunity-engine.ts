@@ -9,19 +9,42 @@ import { appendRecommendations, loadRecommendationLedger, recommendationsFromEng
 const ENDPOINT = "run-opportunity-engine";
 
 async function sendAutoPaperCreatedAlert(item: RecommendationLedgerItem) {
+  const isPoly = item.marketType === "polymarket";
   await sendAlert({
-    title: `AUTO PAPER CREATED: ${item.tickerOrMarket}`,
-    message: [
-      `Category: ${item.tradeCategory}`,
-      `Action: ${item.directExecutionPlan.label}`,
-      `Entry: ${item.directExecutionPlan.entryZone}`,
-      `Invalidation: ${item.directExecutionPlan.stopOrInvalidation}`,
-      `Target: ${item.directExecutionPlan.target1}`,
-      `Max risk: ${item.maxRisk}`,
-      `Direct steps: ${item.marketType === "polymarket" ? item.directExecutionPlan.polymarketSteps.slice(0, 5).join(" | ") : item.directExecutionPlan.robinhoodSteps.slice(0, 5).join(" | ")}`,
-      "Status: auto-paper created / waiting for trigger.",
-      "Manual approval only. No real auto-trading."
-    ].join("\n"),
+    title: isPoly ? `URGENT POLYMARKET WATCH: ${item.tickerOrMarket}` : `ACTIONABLE OPPORTUNITY: ${item.tickerOrMarket}`,
+    message: isPoly
+      ? [
+          "URGENT POLYMARKET WATCH",
+          `Market: ${item.title}`,
+          `YES Means: Event happens under the market rules.`,
+          `NO Means: Event does not happen under the market rules.`,
+          `Current YES/NO: ${item.currentPriceOrOddsAtRecommendation}`,
+          `Event Time: ${item.catalystCountdown}`,
+          `Confidence: ${item.confidence}`,
+          `Expected Value: ${item.directExecutionPlan.expectedValueEstimate}`,
+          `Action: ${item.recommendation}`,
+          `Max Risk: ${item.maxRisk} from $50 account.`,
+          `Why Now: ${item.whyNow}`,
+          `Why Skip: ${item.whySkip}`,
+          `Next Check: ${item.nextSuggestedCheck}`,
+          "Manual Only"
+        ].join("\n")
+      : [
+          "ACTIONABLE OPPORTUNITY",
+          `Type: ${item.tradeCategory}`,
+          `Ticker/Market: ${item.tickerOrMarket}`,
+          `Confidence: ${item.confidence}`,
+          `Readiness: ${item.readinessLabel} ${item.executionReadinessScore}/100`,
+          `Entry: ${item.directExecutionPlan.exactEntry}`,
+          `Stop: ${item.directExecutionPlan.exactStop}`,
+          `Target: ${item.directExecutionPlan.exactTarget1}`,
+          `Risk: ${item.directExecutionPlan.riskPerShare}; max paper risk ${item.maxRisk}`,
+          `Why Now: ${item.whyNow}`,
+          `Catalyst: ${item.catalystType}`,
+          `What Could Fail: ${item.whySkip}`,
+          `Next Check: ${item.nextSuggestedCheck}`,
+          "Manual Execution Only"
+        ].join("\n"),
     severity: item.riskLevel,
     alertType: item.marketType === "polymarket" ? "polymarket mover" : "stock mover",
     channels: ["telegram"]
@@ -43,7 +66,7 @@ export const handler: Handler = async (event) => {
       const generated = recommendationsFromEngine(engine, existing);
       await appendRecommendations(generated);
       const newAutoPaper = generated
-        .filter((item) => item.autoPaperEligible && item.confidence === "high" && !existingIds.has(item.id))
+        .filter((item) => item.autoPaperEligible && item.executionReadinessScore >= 70 && !existingIds.has(item.id))
         .slice(0, 3);
       for (const item of newAutoPaper) {
         await sendAutoPaperCreatedAlert(item).catch(() => null);

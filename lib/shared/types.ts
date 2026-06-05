@@ -610,11 +610,25 @@ export type DirectExecutionPlan = {
   label: "PAPER EXECUTION CANDIDATE" | "WATCH ONLY" | "SKIP" | "AVOID" | "OPTIONS WATCH - HIGH RISK" | "POLYMARKET BINARY RISK";
   category: "DAY TRADE - SHARES" | "DAY TRADE - OPTIONS WATCH" | "LONG-TERM INVESTING" | "POLYMARKET";
   direction: "LONG WATCH" | "SHORT WATCH" | "WATCH" | "PAPER YES" | "PAPER NO" | "NO TRADE";
+  readinessLabel: "WATCH ONLY" | "PREPARE" | "ACTIONABLE" | "HIGH CONVICTION";
   currentPriceOrOdds: string;
   entryZone: string;
+  exactEntry: string;
   stopOrInvalidation: string;
+  exactStop: string;
   target1: string;
   target2: string;
+  exactTarget1: string;
+  exactTarget2: string;
+  riskPerShare: string;
+  rewardPerShare: string;
+  riskRewardRatio: string;
+  confidenceScore: string;
+  expectedValueEstimate: string;
+  whyNow: string;
+  nextSuggestedCheck: string;
+  catalystCountdown: string;
+  urgencyLevel: "low" | "medium" | "high" | "urgent";
   maxPaperRisk: "$2-$5";
   suggestedPaperPositionSize: string;
   timeHorizon: string;
@@ -623,6 +637,14 @@ export type DirectExecutionPlan = {
   polymarketSteps: string[];
   optionsUnavailableMessage: string;
   warnings: string[];
+};
+
+export type TradeReadinessBreakdown = {
+  entryQuality: number;
+  riskDefinition: number;
+  catalystQuality: number;
+  timingQuality: number;
+  reasons: string[];
 };
 
 export type AutoPaperTradePlan = {
@@ -678,6 +700,12 @@ export type RecommendationLedgerItem = {
   autoPaperEligible: boolean;
   reasonNotEligible: string;
   executionPlanQuality: ExecutionPlanQuality;
+  readinessLabel: "WATCH ONLY" | "PREPARE" | "ACTIONABLE" | "HIGH CONVICTION";
+  readinessBreakdown: TradeReadinessBreakdown;
+  lastChecked: string | null;
+  nextSuggestedCheck: string;
+  catalystCountdown: string;
+  urgencyLevel: "low" | "medium" | "high" | "urgent";
   directExecutionPlan: DirectExecutionPlan;
   autoPaperTrade: AutoPaperTradePlan | null;
 };

@@ -40,6 +40,32 @@ function numberFromText(value: string) {
   return match ? Number(match[1]) : null;
 }
 
+function dollars(value: number) {
+  return `$${value.toFixed(2)}`;
+}
+
+function readinessLabel(score: number): RecommendationLedgerItem["readinessLabel"] {
+  if (score >= 85) return "HIGH CONVICTION";
+  if (score >= 70) return "ACTIONABLE";
+  if (score >= 40) return "PREPARE";
+  return "WATCH ONLY";
+}
+
+function urgencyFromText(text: string): RecommendationLedgerItem["urgencyLevel"] {
+  const normalized = text.toLowerCase();
+  if (/(today|live|now|this hour|resolves soon|same day|breaking|urgent)/.test(normalized)) return "urgent";
+  if (/(tomorrow|soon|earnings|8-k|fed|cpi|jobs|closing|midday)/.test(normalized)) return "high";
+  if (/(week|watch|monitor)/.test(normalized)) return "medium";
+  return "low";
+}
+
+function nextCheckFor(urgency: RecommendationLedgerItem["urgencyLevel"]) {
+  if (urgency === "urgent") return "Re-check in 15-30 minutes or when the trigger prints.";
+  if (urgency === "high") return "Re-check within 1 hour or before the catalyst window.";
+  if (urgency === "medium") return "Re-check next scan or later today.";
+  return "Re-check tomorrow unless fresh news appears.";
+}
+
 function hasClearText(value: string) {
   const normalized = value.trim().toLowerCase();
   return normalized.length > 8 && !["n/a", "unknown", "none"].includes(normalized);
@@ -57,6 +83,19 @@ function buildDirectExecutionPlan(
   recommendation: RecommendationLedgerItem["recommendation"]
 ): RecommendationLedgerItem["directExecutionPlan"] {
   const isPoly = opportunity.marketType === "polymarket";
+  const currentNumber = numberFromText(opportunity.current);
+  const stockEntry = currentNumber === null ? "Wait for a clean trigger near current price." : dollars(currentNumber);
+  const stockStop = currentNumber === null ? opportunity.invalidation : dollars(Math.max(0.01, currentNumber * 0.97));
+  const stockTarget1 = currentNumber === null ? opportunity.actionPlan.whenToExit : dollars(currentNumber * 1.05);
+  const stockTarget2 = currentNumber === null ? opportunity.bullCase : dollars(currentNumber * 1.08);
+  const riskPerShareNumber = currentNumber === null ? null : Math.max(0.01, currentNumber - currentNumber * 0.97);
+  const rewardPerShareNumber = currentNumber === null ? null : Math.max(0.01, currentNumber * 1.05 - currentNumber);
+  const ratio = riskPerShareNumber && rewardPerShareNumber ? rewardPerShareNumber / riskPerShareNumber : null;
+  const suggestedShares = currentNumber === null ? "small dollar amount" : `${Math.max(1, Math.floor(20 / currentNumber))} share${Math.max(1, Math.floor(20 / currentNumber)) === 1 ? "" : "s"}`;
+  const yesOdds = opportunity.current.match(/YES\s+(\d+)%/i)?.[1];
+  const noOdds = opportunity.current.match(/NO\s+(\d+)%/i)?.[1];
+  const polyEntry = recommendation === "PAPER_NO" ? (noOdds ? `${noOdds} cents` : opportunity.current) : yesOdds ? `${yesOdds} cents` : opportunity.current;
+  const urgency = urgencyFromText(`${opportunity.current} ${opportunity.catalyst.whyItMatters} ${opportunity.title}`);
   const label =
     recommendation === "AVOID"
       ? "AVOID"
@@ -68,16 +107,34 @@ function buildDirectExecutionPlan(
             ? "PAPER EXECUTION CANDIDATE"
             : "WATCH ONLY";
   const direction = recommendation === "PAPER_YES" ? "PAPER YES" : recommendation === "PAPER_NO" ? "PAPER NO" : recommendation === "PAPER_TRADE" ? "LONG WATCH" : "WATCH";
+  const exactEntry = isPoly ? polyEntry : stockEntry;
+  const exactStop = isPoly ? "Exit/skip if official news contradicts the side or odds move 8-12 cents against the thesis." : stockStop;
+  const exactTarget1 = isPoly ? "Take paper profit if odds move 8-12 cents in your favor." : stockTarget1;
+  const exactTarget2 = isPoly ? "Take more paper profit if odds move 15-20 cents in your favor or the edge becomes crowded." : stockTarget2;
 
   return {
     label,
     category: isPoly ? "POLYMARKET" : tradeCategory === "LONG_TERM" ? "LONG-TERM INVESTING" : "DAY TRADE - SHARES",
     direction,
+    readinessLabel: "WATCH ONLY",
     currentPriceOrOdds: opportunity.current,
-    entryZone: opportunity.actionPlan.manualChecklist.find((item) => item.toLowerCase().includes("entry") || item.toLowerCase().includes("price")) ?? opportunity.current,
-    stopOrInvalidation: opportunity.invalidation,
-    target1: opportunity.actionPlan.whenToExit,
-    target2: opportunity.bullCase,
+    entryZone: exactEntry,
+    exactEntry,
+    stopOrInvalidation: exactStop,
+    exactStop,
+    target1: exactTarget1,
+    target2: exactTarget2,
+    exactTarget1,
+    exactTarget2,
+    riskPerShare: riskPerShareNumber === null ? "Binary paper risk; max loss is the paper stake." : dollars(riskPerShareNumber),
+    rewardPerShare: rewardPerShareNumber === null ? "Binary reward depends on odds movement." : dollars(rewardPerShareNumber),
+    riskRewardRatio: ratio === null ? "Estimate from odds movement, not stock-style R/R." : `${ratio.toFixed(1)}:1`,
+    confidenceScore: `${opportunity.confidence} confidence before readiness adjustment.`,
+    expectedValueEstimate: ratio !== null && ratio >= 1.5 ? "Positive only if trigger confirms and risk stays controlled." : "Needs confirmation; do not assume positive EV.",
+    whyNow: opportunity.actionPlan.plainEnglish.whyItMattersToday,
+    nextSuggestedCheck: nextCheckFor(urgency),
+    catalystCountdown: urgency === "urgent" ? "Catalyst window is active now or today." : urgency === "high" ? "Catalyst is approaching soon." : "No immediate catalyst countdown.",
+    urgencyLevel: urgency,
     maxPaperRisk: "$2-$5",
     suggestedPaperPositionSize: opportunity.actionPlan.suggestedPaperPositionSize,
     timeHorizon: tradeCategory === "DAY_TRADE" ? "Same day. Expire this idea by the close unless the trigger is active." : tradeCategory === "POLYMARKET" ? "Until the catalyst/news resolves or odds move against the thesis." : "Weeks to months. Watchlist or small DCA only.",
@@ -101,14 +158,15 @@ function buildDirectExecutionPlan(
             "Tap the correct stock/ETF.",
             "Tap Trade.",
             "Tap Buy.",
-            "Choose Dollars or Shares.",
+            `Choose Shares and enter ${suggestedShares}, or choose Dollars for a tiny paper size.`,
             "Choose Limit Order, not Market Order.",
-            "Enter the limit price from the entry zone.",
+            `Enter the limit price near ${exactEntry}.`,
             "Review estimated cost.",
             "Do not submit if price moved outside the entry zone.",
             "If paper trading, click 'I entered this' in the app.",
-            "If the invalidation level breaks, exit manually or use a stop/stop-limit if available.",
-            "If target hits, take profit or mark target hit in the app."
+            `After fill, use the stop/invalidation plan near ${exactStop}.`,
+            `Take partial paper profit near ${exactTarget1}.`,
+            `Take more paper profit or close near ${exactTarget2}.`
           ],
     polymarketSteps: isPoly
       ? [
@@ -134,69 +192,125 @@ function buildDirectExecutionPlan(
   };
 }
 
-function executionReadinessFor(item: Pick<RecommendationLedgerItem, "tradeCategory" | "marketType" | "recommendation" | "entryZone" | "stopOrInvalidation" | "target1" | "currentPriceOrOddsAtRecommendation" | "confidence" | "riskLevel" | "whySkip" | "sourceDataUsed" | "directExecutionPlan">): Pick<
+function executionReadinessFor(item: Pick<RecommendationLedgerItem, "tradeCategory" | "marketType" | "recommendation" | "entryZone" | "stopOrInvalidation" | "target1" | "target2" | "currentPriceOrOddsAtRecommendation" | "confidence" | "riskLevel" | "whySkip" | "whyNow" | "sourceDataUsed" | "directExecutionPlan" | "strategyTags" | "signalTypes" | "learningAdjustment">): Pick<
   RecommendationLedgerItem,
-  "executionReadinessScore" | "autoPaperEligible" | "reasonNotEligible" | "executionPlanQuality"
+  "executionReadinessScore" | "autoPaperEligible" | "reasonNotEligible" | "executionPlanQuality" | "readinessLabel" | "readinessBreakdown" | "nextSuggestedCheck" | "catalystCountdown" | "urgencyLevel"
 > {
   const reasons: string[] = [];
-  let score = 0;
   const entry = hasClearText(item.entryZone);
   const stop = hasClearText(item.stopOrInvalidation);
   const target = hasClearText(item.target1);
   const entryNumber = numberFromText(item.entryZone);
   const stopNumber = numberFromText(item.stopOrInvalidation);
   const targetNumber = numberFromText(item.target1);
-  const riskRewardOk = entryNumber !== null && stopNumber !== null && targetNumber !== null ? Math.abs(targetNumber - entryNumber) >= Math.abs(entryNumber - stopNumber) : target;
+  const riskDistance = entryNumber !== null && stopNumber !== null ? Math.abs(entryNumber - stopNumber) : null;
+  const rewardDistance = entryNumber !== null && targetNumber !== null ? Math.abs(targetNumber - entryNumber) : null;
+  const ratio = riskDistance && rewardDistance ? rewardDistance / riskDistance : null;
+  const riskRewardOk = ratio === null ? target : ratio >= 1.2;
   const confidenceOk = item.confidence === "high" || (item.confidence === "medium" && item.riskLevel !== "high");
   const actionable = !["SKIP", "AVOID", "WATCH"].includes(item.recommendation);
   const notOverextended = !/(ran too far|overextended|already moved|chase)/i.test(item.whySkip);
   const liquidityOk = !/(low liquidity|thin liquidity|wide spread)/i.test(item.whySkip);
   const dataFresh = item.sourceDataUsed.includes("opportunity-engine") || item.sourceDataUsed.includes("saved-report");
   const rulesClear = item.marketType !== "polymarket" || !/(unclear|ambiguous|vague)/i.test(`${item.whySkip} ${item.stopOrInvalidation}`);
+  const text = `${item.whyNow} ${item.whySkip} ${item.directExecutionPlan.catalystCountdown} ${item.signalTypes.join(" ")}`.toLowerCase();
+  const urgency = item.directExecutionPlan.urgencyLevel ?? urgencyFromText(text);
+  const hasCatalyst = /(earnings|8-k|sec|fed|cpi|jobs|inflation|news|volume|macro|crypto|election|live|today|filing|catalyst)/i.test(text);
+  const activeNow = urgency === "urgent" || urgency === "high";
+  const highRiskPenalty = item.riskLevel === "high" ? 8 : item.riskLevel === "medium" ? 3 : 0;
 
-  if (entry) score += 15;
-  else reasons.push("No clear entry zone.");
-  if (stop) score += 15;
-  else reasons.push("No clear stop/invalidation.");
-  if (target) score += 15;
-  else reasons.push("No clear target.");
-  if (riskRewardOk) score += 15;
-  else reasons.push("Risk/reward is not clear enough.");
-  if (confidenceOk) score += 15;
-  else reasons.push("Confidence is below the auto-paper threshold.");
-  if (dataFresh) score += 10;
-  else reasons.push("Data freshness is not clear.");
-  if (liquidityOk) score += 8;
-  else reasons.push("Liquidity/spread warning.");
-  if (notOverextended) score += 5;
-  else reasons.push("Idea may already be overextended.");
-  if (rulesClear) score += 7;
-  else reasons.push("Polymarket rules/resolution are not clear enough.");
+  const entryQuality = Math.max(
+    0,
+    Math.min(
+      25,
+      (entry ? 8 : 0) +
+        (entryNumber !== null ? 5 : 0) +
+        (/(support|demand|vwap|break|hold|near current|odds)/i.test(`${item.entryZone} ${item.whyNow}`) ? 5 : 0) +
+        (notOverextended ? 5 : 0) +
+        (item.confidence === "high" ? 2 : 0)
+    )
+  );
+  const riskDefinition = Math.max(
+    0,
+    Math.min(
+      25,
+      (stop ? 7 : 0) +
+        (target ? 5 : 0) +
+        (riskDistance !== null ? 4 : 0) +
+        (rewardDistance !== null ? 4 : 0) +
+        (riskRewardOk ? 5 : 0) -
+        highRiskPenalty
+    )
+  );
+  const catalystQuality = Math.max(
+    0,
+    Math.min(
+      25,
+      (hasCatalyst ? 8 : 0) +
+        (dataFresh ? 5 : 0) +
+        (item.confidence === "high" ? 5 : item.confidence === "medium" ? 3 : 0) +
+        (item.strategyTags.some((tag) => /SEC 8-K|earnings|macro|crypto|politics|finance/i.test(tag)) ? 4 : 0) +
+        (liquidityOk ? 3 : 0)
+    )
+  );
+  const timingQuality = Math.max(
+    0,
+    Math.min(25, (activeNow ? 8 : urgency === "medium" ? 4 : 1) + (notOverextended ? 6 : 0) + (liquidityOk ? 4 : 0) + (rulesClear ? 4 : 0) + (item.learningAdjustment > 0 ? 3 : 0))
+  );
+
+  if (!entry) reasons.push("No clear entry zone.");
+  if (!stop) reasons.push("No clear stop/invalidation.");
+  if (!target) reasons.push("No clear target.");
+  if (!riskRewardOk) reasons.push("Risk/reward is not clear enough.");
+  if (!confidenceOk) reasons.push("Confidence is below the action threshold.");
+  if (!dataFresh) reasons.push("Data freshness is not clear.");
+  if (!liquidityOk) reasons.push("Liquidity/spread warning.");
+  if (!notOverextended) reasons.push("Idea may already be overextended or missed.");
+  if (!rulesClear) reasons.push("Polymarket rules/resolution are not clear enough.");
   if (!actionable) reasons.push("Recommendation is watch/skip/avoid, not an execution candidate.");
 
-  const executionReadinessScore = Math.min(100, score);
-  const autoPaperEligible = actionable && executionReadinessScore >= 75 && entry && stop && target && liquidityOk && notOverextended && rulesClear;
+  const executionReadinessScore = Math.min(100, entryQuality + riskDefinition + catalystQuality + timingQuality + Math.max(-8, Math.min(8, item.learningAdjustment)));
+  const label = readinessLabel(executionReadinessScore);
+  const autoPaperEligible = actionable && executionReadinessScore >= 70 && entry && stop && target && liquidityOk && notOverextended && rulesClear && confidenceOk;
   const executionPlanQuality: RecommendationLedgerItem["executionPlanQuality"] =
-    executionReadinessScore >= 92 ? "elite" : executionReadinessScore >= 82 ? "strong" : executionReadinessScore >= 65 ? "acceptable" : "weak";
+    executionReadinessScore >= 85 ? "elite" : executionReadinessScore >= 70 ? "strong" : executionReadinessScore >= 40 ? "acceptable" : "weak";
   return {
     executionReadinessScore,
     autoPaperEligible,
     reasonNotEligible: autoPaperEligible ? "" : reasons.join(" "),
-    executionPlanQuality
+    executionPlanQuality,
+    readinessLabel: label,
+    readinessBreakdown: { entryQuality, riskDefinition, catalystQuality, timingQuality, reasons },
+    nextSuggestedCheck: item.directExecutionPlan.nextSuggestedCheck,
+    catalystCountdown: item.directExecutionPlan.catalystCountdown,
+    urgencyLevel: urgency
   };
 }
 
 function normalizeStoredItem(item: RecommendationLedgerItem): RecommendationLedgerItem {
-  const directExecutionPlan =
-    item.directExecutionPlan ?? {
+  const defaultDirectExecutionPlan: RecommendationLedgerItem["directExecutionPlan"] = {
       label: item.recommendation === "AVOID" ? "AVOID" : item.recommendation === "SKIP" ? "SKIP" : item.marketType === "polymarket" ? "POLYMARKET BINARY RISK" : "WATCH ONLY",
       category: item.marketType === "polymarket" ? "POLYMARKET" : item.tradeCategory === "LONG_TERM" ? "LONG-TERM INVESTING" : "DAY TRADE - SHARES",
       direction: item.recommendation === "PAPER_YES" ? "PAPER YES" : item.recommendation === "PAPER_NO" ? "PAPER NO" : item.recommendation === "PAPER_TRADE" ? "LONG WATCH" : "WATCH",
+      readinessLabel: readinessLabel(item.executionReadinessScore ?? 0),
       currentPriceOrOdds: item.currentPriceOrOddsAtRecommendation,
       entryZone: item.entryZone,
+      exactEntry: item.entryZone,
       stopOrInvalidation: item.stopOrInvalidation,
+      exactStop: item.stopOrInvalidation,
       target1: item.target1,
       target2: item.target2,
+      exactTarget1: item.target1,
+      exactTarget2: item.target2,
+      riskPerShare: "Needs fresh scan.",
+      rewardPerShare: "Needs fresh scan.",
+      riskRewardRatio: "Needs fresh scan.",
+      confidenceScore: item.confidence,
+      expectedValueEstimate: "Needs fresh scan; never fabricate EV.",
+      whyNow: item.whyNow,
+      nextSuggestedCheck: "Re-run Opportunities to refresh this saved setup.",
+      catalystCountdown: "Saved before catalyst countdown existed.",
+      urgencyLevel: "low" as const,
       maxPaperRisk: "$2-$5" as const,
       suggestedPaperPositionSize: "Risk only $2-$5 while paper-tracking.",
       timeHorizon: item.tradeCategory === "DAY_TRADE" ? "Same day watch." : item.tradeCategory === "POLYMARKET" ? "Until the catalyst resolves." : "Longer-term watchlist.",
@@ -206,12 +320,25 @@ function normalizeStoredItem(item: RecommendationLedgerItem): RecommendationLedg
       optionsUnavailableMessage: "Options Watch unavailable - options chain data source not connected.",
       warnings: ["Manual approval only. No real auto-trading."]
     };
+  const directExecutionPlan = { ...defaultDirectExecutionPlan, ...(item.directExecutionPlan ?? {}) };
   return {
     ...item,
     executionReadinessScore: item.executionReadinessScore ?? 0,
     autoPaperEligible: item.autoPaperEligible ?? false,
     reasonNotEligible: item.reasonNotEligible ?? "Saved before execution readiness scoring existed.",
     executionPlanQuality: item.executionPlanQuality ?? "weak",
+    readinessLabel: item.readinessLabel ?? readinessLabel(item.executionReadinessScore ?? 0),
+    readinessBreakdown: item.readinessBreakdown ?? {
+      entryQuality: 0,
+      riskDefinition: 0,
+      catalystQuality: 0,
+      timingQuality: 0,
+      reasons: ["Re-run Opportunities to calculate the upgraded readiness breakdown."]
+    },
+    lastChecked: item.lastChecked ?? item.lastCheckedAt ?? null,
+    nextSuggestedCheck: item.nextSuggestedCheck ?? directExecutionPlan.nextSuggestedCheck,
+    catalystCountdown: item.catalystCountdown ?? directExecutionPlan.catalystCountdown,
+    urgencyLevel: item.urgencyLevel ?? directExecutionPlan.urgencyLevel,
     directExecutionPlan,
     autoPaperTrade: item.autoPaperTrade ?? null
   };
@@ -293,13 +420,25 @@ export function recommendationFromOpportunity(
     directExecutionPlan
   } satisfies Omit<
     RecommendationLedgerItem,
-    "executionReadinessScore" | "autoPaperEligible" | "reasonNotEligible" | "executionPlanQuality" | "autoPaperTrade"
+    | "executionReadinessScore"
+    | "autoPaperEligible"
+    | "reasonNotEligible"
+    | "executionPlanQuality"
+    | "readinessLabel"
+    | "readinessBreakdown"
+    | "lastChecked"
+    | "nextSuggestedCheck"
+    | "catalystCountdown"
+    | "urgencyLevel"
+    | "autoPaperTrade"
   >;
   const readiness = executionReadinessFor(base);
   return {
     ...base,
     ...readiness,
     status: readiness.autoPaperEligible ? "waiting_for_trigger" : base.status,
+    lastChecked: null,
+    directExecutionPlan: { ...base.directExecutionPlan, readinessLabel: readiness.readinessLabel },
     autoPaperTrade: readiness.autoPaperEligible
       ? {
           plannedEntry: base.entryZone,
@@ -330,11 +469,25 @@ export function recommendationsFromReport(report: SavedDailyReport, existing: Re
       label: recommendation === "PAPER_TRADE" ? "PAPER EXECUTION CANDIDATE" : recommendation === "AVOID" ? "AVOID" : "WATCH ONLY",
       category: "DAY TRADE - SHARES",
       direction: recommendation === "PAPER_TRADE" ? "LONG WATCH" : "WATCH",
+      readinessLabel: "WATCH ONLY",
       currentPriceOrOdds: idea.current,
       entryZone: idea.entryZone,
+      exactEntry: idea.entryZone,
       stopOrInvalidation: idea.stopInvalidation,
+      exactStop: idea.stopInvalidation,
       target1: idea.target,
       target2: idea.watchNext[0] ?? idea.target,
+      exactTarget1: idea.target,
+      exactTarget2: idea.watchNext[0] ?? idea.target,
+      riskPerShare: "Calculated from the paper stop after confirming live price.",
+      rewardPerShare: "Calculated from target after confirming live price.",
+      riskRewardRatio: "Confirm live price first.",
+      confidenceScore: "medium confidence before readiness adjustment.",
+      expectedValueEstimate: "Needs trigger confirmation; do not assume positive EV.",
+      whyNow: idea.reason,
+      nextSuggestedCheck: "Re-check in 30-60 minutes or before the catalyst window.",
+      catalystCountdown: "Report idea; catalyst may be active today.",
+      urgencyLevel: "high",
       maxPaperRisk: "$2-$5",
       suggestedPaperPositionSize: "Risk only $2-$5. Use a tiny paper position sized around the stop distance.",
       timeHorizon: "Same day. Expire this idea by the close unless the trigger is active.",
@@ -433,15 +586,27 @@ export function recommendationsFromReport(report: SavedDailyReport, existing: Re
       lastCheckedAt: null,
       lastAlertedStatus: null,
       directExecutionPlan
-    } satisfies Omit<
+  } satisfies Omit<
       RecommendationLedgerItem,
-      "executionReadinessScore" | "autoPaperEligible" | "reasonNotEligible" | "executionPlanQuality" | "autoPaperTrade"
+      | "executionReadinessScore"
+      | "autoPaperEligible"
+      | "reasonNotEligible"
+      | "executionPlanQuality"
+      | "readinessLabel"
+      | "readinessBreakdown"
+      | "lastChecked"
+      | "nextSuggestedCheck"
+      | "catalystCountdown"
+      | "urgencyLevel"
+      | "autoPaperTrade"
     >;
     const readiness = executionReadinessFor(base);
     reportRecommendations.push({
       ...base,
       ...readiness,
       status: readiness.autoPaperEligible ? "waiting_for_trigger" : base.status,
+      lastChecked: null,
+      directExecutionPlan: { ...base.directExecutionPlan, readinessLabel: readiness.readinessLabel },
       autoPaperTrade: readiness.autoPaperEligible
         ? {
             plannedEntry: base.entryZone,

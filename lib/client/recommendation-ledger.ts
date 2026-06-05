@@ -3,17 +3,37 @@ import { safeJsonFetch } from "./safe-json-fetch";
 
 const LEDGER_KEY = "market-intelligence-recommendation-ledger";
 
+function readinessLabel(score: number): RecommendationLedgerItem["readinessLabel"] {
+  if (score >= 85) return "HIGH CONVICTION";
+  if (score >= 70) return "ACTIONABLE";
+  if (score >= 40) return "PREPARE";
+  return "WATCH ONLY";
+}
+
 function normalizeItem(item: RecommendationLedgerItem): RecommendationLedgerItem {
-  const directExecutionPlan =
-    item.directExecutionPlan ?? {
+  const defaultDirectExecutionPlan: RecommendationLedgerItem["directExecutionPlan"] = {
       label: item.recommendation === "AVOID" ? "AVOID" : item.recommendation === "SKIP" ? "SKIP" : item.marketType === "polymarket" ? "POLYMARKET BINARY RISK" : "WATCH ONLY",
       category: item.marketType === "polymarket" ? "POLYMARKET" : item.tradeCategory === "LONG_TERM" ? "LONG-TERM INVESTING" : "DAY TRADE - SHARES",
       direction: item.recommendation === "PAPER_YES" ? "PAPER YES" : item.recommendation === "PAPER_NO" ? "PAPER NO" : item.recommendation === "PAPER_TRADE" ? "LONG WATCH" : "WATCH",
+      readinessLabel: readinessLabel(item.executionReadinessScore ?? 0),
       currentPriceOrOdds: item.currentPriceOrOddsAtRecommendation,
       entryZone: item.entryZone,
+      exactEntry: item.entryZone,
       stopOrInvalidation: item.stopOrInvalidation,
+      exactStop: item.stopOrInvalidation,
       target1: item.target1,
       target2: item.target2,
+      exactTarget1: item.target1,
+      exactTarget2: item.target2,
+      riskPerShare: "Needs fresh scan.",
+      rewardPerShare: "Needs fresh scan.",
+      riskRewardRatio: "Needs fresh scan.",
+      confidenceScore: item.confidence,
+      expectedValueEstimate: "Needs fresh scan; never fabricate EV.",
+      whyNow: item.whyNow,
+      nextSuggestedCheck: "Re-run Opportunities to refresh this saved setup.",
+      catalystCountdown: "Saved before catalyst countdown existed.",
+      urgencyLevel: "low" as const,
       maxPaperRisk: "$2-$5" as const,
       suggestedPaperPositionSize: "Risk only $2-$5 while paper-tracking.",
       timeHorizon: item.tradeCategory === "DAY_TRADE" ? "Same day watch." : item.tradeCategory === "POLYMARKET" ? "Until the catalyst resolves." : "Longer-term watchlist.",
@@ -23,12 +43,25 @@ function normalizeItem(item: RecommendationLedgerItem): RecommendationLedgerItem
       optionsUnavailableMessage: "Options Watch unavailable - options chain data source not connected.",
       warnings: ["Manual approval only. No real auto-trading."]
     };
+  const directExecutionPlan = { ...defaultDirectExecutionPlan, ...(item.directExecutionPlan ?? {}) };
   return {
     ...item,
     executionReadinessScore: item.executionReadinessScore ?? 0,
     autoPaperEligible: item.autoPaperEligible ?? false,
     reasonNotEligible: item.reasonNotEligible ?? "Saved before execution readiness scoring existed.",
     executionPlanQuality: item.executionPlanQuality ?? "weak",
+    readinessLabel: item.readinessLabel ?? readinessLabel(item.executionReadinessScore ?? 0),
+    readinessBreakdown: item.readinessBreakdown ?? {
+      entryQuality: 0,
+      riskDefinition: 0,
+      catalystQuality: 0,
+      timingQuality: 0,
+      reasons: ["Re-run Opportunities to calculate the upgraded readiness breakdown."]
+    },
+    lastChecked: item.lastChecked ?? item.lastCheckedAt ?? null,
+    nextSuggestedCheck: item.nextSuggestedCheck ?? directExecutionPlan.nextSuggestedCheck,
+    catalystCountdown: item.catalystCountdown ?? directExecutionPlan.catalystCountdown,
+    urgencyLevel: item.urgencyLevel ?? directExecutionPlan.urgencyLevel,
     directExecutionPlan,
     autoPaperTrade: item.autoPaperTrade ?? null
   };
