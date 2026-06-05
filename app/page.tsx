@@ -35,6 +35,8 @@ import type {
   PolymarketScanResponse,
   PriceActionAnalyzerResponse,
   ConditionalCalloutPlan,
+  LearningAnalytics,
+  RecommendationLedgerItem,
   SavedDailyReport,
   SavedReportsResponse,
   ScheduleDiagnosticsRecord,
@@ -66,8 +68,15 @@ import {
   saveLocalAppState,
   saveServerAppState
 } from "@/lib/client/app-state";
+import {
+  analyzeLocalRecommendationLedger,
+  loadServerRecommendationLedger,
+  saveLocalRecommendationLedger,
+  saveRecommendationUpdate
+} from "@/lib/client/recommendation-ledger";
 
 type Tab =
+  | "Best Right Now"
   | "Top Opportunities"
   | "Daily Playbook"
   | "Action Plans"
@@ -79,6 +88,10 @@ type Tab =
   | "Cross-Market Opportunities"
   | "Reports"
   | "Alerts"
+  | "Active Trades"
+  | "Recommendation Ledger"
+  | "Learning"
+  | "Polymarket $50 Plan"
   | "Paper Trades"
   | "Research Feed"
   | "Setup"
@@ -120,6 +133,7 @@ type BlobDiagnostics = {
 };
 
 const tabs: Tab[] = [
+  "Best Right Now",
   "Top Opportunities",
   "Daily Playbook",
   "Action Plans",
@@ -131,6 +145,10 @@ const tabs: Tab[] = [
   "Cross-Market Opportunities",
   "Reports",
   "Alerts",
+  "Active Trades",
+  "Recommendation Ledger",
+  "Learning",
+  "Polymarket $50 Plan",
   "Paper Trades",
   "Research Feed",
   "Setup",
@@ -189,6 +207,8 @@ export default function Home() {
   const [scheduleDiagnostics, setScheduleDiagnostics] = useState<ScheduleDiagnosticsRecord | null>(null);
   const [paperTrades, setPaperTrades] = useState<PaperTrade[]>(loadPaperTrades);
   const [feed, setFeed] = useState<ResearchFeedItem[]>(loadResearchFeed);
+  const [recommendations, setRecommendations] = useState<RecommendationLedgerItem[]>([]);
+  const [learningAnalytics, setLearningAnalytics] = useState<LearningAnalytics>(analyzeLocalRecommendationLedger([]));
   const [loading, setLoading] = useState<"stock" | "polymarket" | "cross" | "alert" | "opportunity" | null>(null);
   const [analyzerLoading, setAnalyzerLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -213,6 +233,7 @@ export default function Home() {
     void checkSetup();
     void hydratePersistedAppState();
     void runDiagnostics();
+    void loadRecommendationLedgerNow();
     void hydratePaperTrades();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -319,6 +340,19 @@ export default function Home() {
       setBlobDiagnostics(null);
       setScheduleDiagnostics(null);
     }
+  }
+
+  async function loadRecommendationLedgerNow() {
+    const response = await loadServerRecommendationLedger();
+    setRecommendations(response.recommendations);
+    setLearningAnalytics(response.analytics);
+    saveLocalRecommendationLedger(response.recommendations);
+  }
+
+  async function updateRecommendationAction(id: string, update: Partial<RecommendationLedgerItem>) {
+    const response = await saveRecommendationUpdate(id, update);
+    setRecommendations(response.recommendations);
+    setLearningAnalytics(response.analytics);
   }
 
   function persistTrades(nextTrades: PaperTrade[]) {
@@ -570,6 +604,7 @@ export default function Home() {
         })
       );
       await maybeSendOpportunityTelegramAlerts(result.opportunities);
+      await loadRecommendationLedgerNow();
       await loadSavedReportsNow();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Opportunity engine failed.");
@@ -831,6 +866,25 @@ export default function Home() {
     }
   }
 
+  async function markRecommendation(id: string, status: RecommendationLedgerItem["status"], userActuallyEntered: RecommendationLedgerItem["userActuallyEntered"] = "unknown") {
+    await updateRecommendationAction(id, { status, userActuallyEntered });
+  }
+
+  async function markRecommendationEntered(item: RecommendationLedgerItem, realTrade: boolean) {
+    const entry = window.prompt("Actual entry price/odds?");
+    if (entry === null) return;
+    const size = window.prompt("Amount risked? Keep default small-account risk $2-$5.");
+    if (size === null) return;
+    const notes = window.prompt("Notes? Robinhood or Polymarket, why you entered, anything to remember.") ?? "";
+    await updateRecommendationAction(item.id, {
+      status: "user_entered",
+      userActuallyEntered: "yes",
+      userEntryPrice: entry,
+      userPositionSize: size,
+      userNotes: `${realTrade ? "REAL TRADE - manual user action. " : "PAPER TRADE. "}${notes}`
+    });
+  }
+
   return (
     <main className="terminal-grid min-h-screen bg-terminal-ink">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-5 sm:px-6 lg:px-8">
@@ -874,6 +928,9 @@ export default function Home() {
           onClear={clearSavedData}
         />
 
+        {activeTab === "Best Right Now" ? (
+          <BestRightNowPanel recommendations={recommendations} onMark={markRecommendation} onEntered={markRecommendationEntered} />
+        ) : null}
         {activeTab === "Top Opportunities" ? (
           <TopOpportunitiesPanel
             engine={engine}
@@ -941,6 +998,18 @@ export default function Home() {
             onRunDiagnostics={runDiagnostics}
           />
         ) : null}
+        {activeTab === "Active Trades" ? (
+          <ActiveTradesPanel recommendations={recommendations} onRefresh={loadRecommendationLedgerNow} onMark={markRecommendation} />
+        ) : null}
+        {activeTab === "Recommendation Ledger" ? (
+          <RecommendationLedgerPanel recommendations={recommendations} onRefresh={loadRecommendationLedgerNow} onMark={markRecommendation} onEntered={markRecommendationEntered} />
+        ) : null}
+        {activeTab === "Learning" ? (
+          <LearningPanel analytics={learningAnalytics} />
+        ) : null}
+        {activeTab === "Polymarket $50 Plan" ? (
+          <PolymarketPlanPanel recommendations={recommendations} />
+        ) : null}
         {activeTab === "Paper Trades" ? (
           <PaperTradesPanel trades={paperTrades} analytics={analytics} storageStatus={paperTradeStorage} onOutcome={updateOutcome} />
         ) : null}
@@ -989,6 +1058,93 @@ function ErrorBanner({ message }: { message: string }) {
       <div className="flex items-center gap-2 font-semibold"><AlertTriangle className="h-4 w-4" />{message}</div>
       <p className="mt-2 text-terminal-muted">Check Setup for required keys and remember Polymarket public data needs no key.</p>
     </div>
+  );
+}
+
+function RecommendationCard({
+  item,
+  onMark,
+  onEntered
+}: {
+  item: RecommendationLedgerItem;
+  onMark: (id: string, status: RecommendationLedgerItem["status"], userActuallyEntered?: RecommendationLedgerItem["userActuallyEntered"]) => void;
+  onEntered?: (item: RecommendationLedgerItem, realTrade: boolean) => void;
+}) {
+  return (
+    <article className="rounded-md border border-terminal-line bg-terminal-panel p-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h3 className="text-lg font-semibold text-white">{item.title}</h3>
+          <p className="mt-1 text-sm text-terminal-muted">{item.tradeCategory} · {item.tickerOrMarket} · {item.recommendation}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <span className={badgeClass(item.status === "target_hit" ? "green" : item.status === "stopped_out" ? "red" : "yellow")}>{item.status}</span>
+          <span className={badgeClass(riskTone(item.riskLevel))}>{item.riskLevel}</span>
+        </div>
+      </div>
+      <div className="mt-4 grid gap-4 lg:grid-cols-3">
+        <Info title="Why" text={item.whyNow} />
+        <Info title="Entry / odds" text={item.entryZone} />
+        <Info title="Invalid if" text={item.stopOrInvalidation} />
+        <Info title="Target 1" text={item.target1} />
+        <Info title="Target 2" text={item.target2} />
+        <Info title="Learning adjustment" text={item.learningAdjustmentReason} />
+      </div>
+      <p className="mt-3 text-sm text-terminal-muted">Max risk: {item.maxRisk}. Manual approval only. Paper trade first.</p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        {onEntered ? <button onClick={() => onEntered(item, false)} className="rounded-md border border-terminal-line px-3 py-2 text-sm text-terminal-muted hover:text-white">I entered this</button> : null}
+        <button onClick={() => onMark(item.id, "user_skipped", "no")} className="rounded-md border border-terminal-line px-3 py-2 text-sm text-terminal-muted hover:text-white">I skipped this</button>
+        <button onClick={() => onMark(item.id, "recommended", "unknown")} className="rounded-md border border-terminal-line px-3 py-2 text-sm text-terminal-muted hover:text-white">Watch only</button>
+        {onEntered ? <button onClick={() => onEntered(item, false)} className="rounded-md border border-terminal-green/40 px-3 py-2 text-sm text-terminal-green">Mark paper trade</button> : null}
+        {onEntered ? <button onClick={() => onEntered(item, true)} className="rounded-md border border-terminal-red/40 px-3 py-2 text-sm text-terminal-red">Mark real trade</button> : null}
+        <button onClick={() => onMark(item.id, "manually_closed", item.userActuallyEntered)} className="rounded-md border border-terminal-line px-3 py-2 text-sm text-terminal-muted hover:text-white">Manually close</button>
+      </div>
+    </article>
+  );
+}
+
+function BestRightNowPanel({
+  recommendations,
+  onMark,
+  onEntered
+}: {
+  recommendations: RecommendationLedgerItem[];
+  onMark: (id: string, status: RecommendationLedgerItem["status"], userActuallyEntered?: RecommendationLedgerItem["userActuallyEntered"]) => void;
+  onEntered: (item: RecommendationLedgerItem, realTrade: boolean) => void;
+}) {
+  const sorted = [...recommendations].sort((a, b) => b.learningAdjustment - a.learningAdjustment || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const bestDay = sorted.find((item) => item.tradeCategory === "DAY_TRADE" && !["SKIP", "AVOID"].includes(item.recommendation));
+  const bestLong = sorted.find((item) => item.tradeCategory === "LONG_TERM");
+  const bestPoly = sorted.find((item) => item.tradeCategory === "POLYMARKET" && !["SKIP", "AVOID"].includes(item.recommendation));
+  const bestWait = sorted.find((item) => item.recommendation === "WATCH");
+  const avoid = sorted.find((item) => ["SKIP", "AVOID"].includes(item.recommendation) || item.riskLevel === "high");
+  const cards = [
+    ["Best DAY TRADE watch", bestDay],
+    ["Best LONG-TERM idea", bestLong],
+    ["Best POLYMARKET idea", bestPoly],
+    ["Best WAIT setup", bestWait],
+    ["Highest-risk avoid idea", avoid]
+  ] as const;
+  return (
+    <section className="grid gap-4">
+      <div className="rounded-md border border-terminal-line bg-terminal-panel p-4">
+        <h2 className="text-lg font-semibold text-white">Best Right Now</h2>
+        <p className="mt-2 text-sm text-terminal-muted">Only the most actionable tracked recommendations. Research only, manual approval only.</p>
+      </div>
+      <div className="grid gap-4 lg:grid-cols-2">
+        {cards.map(([title, item]) =>
+          item ? (
+            <div key={title} className="grid gap-2">
+              <h3 className="text-sm font-semibold uppercase text-terminal-cyan">{title}</h3>
+              <RecommendationCard item={item} onMark={onMark} onEntered={onEntered} />
+            </div>
+          ) : (
+            <EmptyState key={title} text={`${title}: no tracked recommendation yet. Run Opportunities to populate the ledger.`} />
+          )
+        )}
+      </div>
+      <List title="What not to touch today" items={avoid ? [avoid.whySkip] : ["Anything with unclear rules, weak catalyst, wide spread, or no trigger."]} />
+    </section>
   );
 }
 
@@ -1518,6 +1674,98 @@ function ReportsPanel({ engine, loading, onRun }: { engine: OpportunityEngineRes
       {loading ? <LoadingState text="Generating report cards..." /> : null}
       {!loading && !engine ? <EmptyState text="Run the opportunity engine to generate report cards." /> : null}
       {engine?.reports.map((report) => <ReportCard key={report.id} report={report} />)}
+    </section>
+  );
+}
+
+function ActiveTradesPanel({
+  recommendations,
+  onRefresh,
+  onMark
+}: {
+  recommendations: RecommendationLedgerItem[];
+  onRefresh: () => void;
+  onMark: (id: string, status: RecommendationLedgerItem["status"], userActuallyEntered?: RecommendationLedgerItem["userActuallyEntered"]) => void;
+}) {
+  const active = recommendations.filter((item) => ["user_entered", "triggered", "recommended"].includes(item.status));
+  async function runMonitor() {
+    await fetch("/.netlify/functions/active-trade-monitor", { method: "POST" }).catch(() => null);
+    await onRefresh();
+  }
+  return (
+    <section className="grid gap-4">
+      <ScannerHeader title="Active Trades" subtitle="Tracks recommendations and paper/real user-entered ideas. No brokerage connection." onRun={runMonitor} loading={false} />
+      {active.length ? active.map((item) => <RecommendationCard key={item.id} item={item} onMark={onMark} />) : <EmptyState text="No active recommendations yet." />}
+    </section>
+  );
+}
+
+function RecommendationLedgerPanel({
+  recommendations,
+  onRefresh,
+  onMark,
+  onEntered
+}: {
+  recommendations: RecommendationLedgerItem[];
+  onRefresh: () => void;
+  onMark: (id: string, status: RecommendationLedgerItem["status"], userActuallyEntered?: RecommendationLedgerItem["userActuallyEntered"]) => void;
+  onEntered: (item: RecommendationLedgerItem, realTrade: boolean) => void;
+}) {
+  return (
+    <section className="grid gap-4">
+      <ScannerHeader title="Recommendation Ledger" subtitle="Every tracked recommendation, whether you entered or did nothing." onRun={onRefresh} loading={false} />
+      {recommendations.length ? recommendations.slice(0, 80).map((item) => <RecommendationCard key={item.id} item={item} onMark={onMark} onEntered={onEntered} />) : <EmptyState text="Run Opportunities to save recommendations automatically." />}
+    </section>
+  );
+}
+
+function LearningPanel({ analytics }: { analytics: LearningAnalytics }) {
+  return (
+    <section className="grid gap-4">
+      <div className="grid gap-4 lg:grid-cols-4">
+        <Metric icon={<Brain />} label="Recommendations" value={String(analytics.totalRecommendations)} />
+        <Metric icon={<Target />} label="Missed winners" value={String(analytics.missedWinners)} />
+        <Metric icon={<ShieldAlert />} label="Avoided losers" value={String(analytics.avoidedLosers)} />
+        <Metric icon={<Gauge />} label="Best setup" value={analytics.bestPerformingSetupType} />
+      </div>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <List title="Win rate by category" items={Object.entries(analytics.winRateByCategory).map(([key, value]) => `${key}: ${value}%`)} />
+        <List title="Win rate by signal type" items={Object.entries(analytics.winRateBySignalType).map(([key, value]) => `${key}: ${value}%`)} />
+        <List title="Win rate by catalyst type" items={Object.entries(analytics.winRateByCatalystType).map(([key, value]) => `${key}: ${value}%`)} />
+        <List title="Average result by confidence" items={Object.entries(analytics.averageResultByConfidence).map(([key, value]) => `${key}: ${value}%`)} />
+        <Info title="System good at" text={analytics.systemGoodAt} />
+        <Info title="System bad at" text={analytics.systemBadAt} />
+      </div>
+      <WarningList items={[analytics.overconfidenceWarning]} />
+    </section>
+  );
+}
+
+function PolymarketPlanPanel({ recommendations }: { recommendations: RecommendationLedgerItem[] }) {
+  const markets = recommendations.filter((item) => item.tradeCategory === "POLYMARKET");
+  const best = markets.find((item) => !["SKIP", "AVOID"].includes(item.recommendation));
+  return (
+    <section className="grid gap-4">
+      <div className="rounded-md border border-terminal-line bg-terminal-panel p-4">
+        <h2 className="text-lg font-semibold text-white">Polymarket $50 Plan</h2>
+        <p className="mt-2 text-sm text-terminal-muted">Never use the full account. Default max is $2-$5 per idea, about 5%-10%. Prediction markets can go to $0.</p>
+      </div>
+      {best ? (
+        <RecommendationCard item={best} onMark={() => undefined} />
+      ) : (
+        <EmptyState text="No Polymarket recommendation yet. Run Opportunities." />
+      )}
+      <List
+        title="Compounding watch rules"
+        items={[
+          "Best market this hour must have clear rules, liquidity, and a near catalyst.",
+          "YES means the event happens under the rules. NO means it does not.",
+          "Max risk: $2-$5 from a $50 account.",
+          "Take profit when odds move in your favor and the thesis becomes crowded.",
+          "Exit if news contradicts the thesis or rules become unclear.",
+          "Skip if odds already made a large move before you saw it."
+        ]}
+      />
     </section>
   );
 }

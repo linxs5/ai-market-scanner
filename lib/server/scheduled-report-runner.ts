@@ -3,6 +3,7 @@ import { sendAlert } from "./alerts";
 import { buildDailyReport, formatDailyTelegram, saveDailyReport, saveScheduleDiagnostics, telegramStatusFromAlert } from "./daily-reports";
 import { env } from "./env";
 import { runOpportunityEngine } from "./opportunity-engine";
+import { appendRecommendations, loadRecommendationLedger, recommendationsFromEngine, recommendationsFromReport } from "./recommendation-ledger";
 
 export async function runScheduledDailyReport(reportType: DailyReportType) {
   const errors: string[] = [];
@@ -94,6 +95,12 @@ export async function runScheduledDailyReport(reportType: DailyReportType) {
     report = await saveDailyReport({
       ...report,
       errors: [...report.errors, ...errors]
+    });
+    const existingLedger = await loadRecommendationLedger().catch(() => []);
+    await appendRecommendations([...recommendationsFromEngine(engine, existingLedger), ...recommendationsFromReport(report, existingLedger)]).catch((error) => {
+      const message = error instanceof Error ? error.message : "Scheduled recommendation ledger save failed.";
+      errors.push(message);
+      console.error(`[scheduled:${reportType}] ${message}`);
     });
     console.log(`[scheduled:${reportType}] report saved ${report.id}`);
   } catch (error) {

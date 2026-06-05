@@ -589,3 +589,75 @@ export type ScheduleDiagnosticsRecord = {
   lastReportSaveAttempt: string | null;
   lastError: string | null;
 };
+
+export type RecommendationStatus =
+  | "recommended"
+  | "user_entered"
+  | "user_skipped"
+  | "missed_trigger"
+  | "triggered"
+  | "target_hit"
+  | "stopped_out"
+  | "expired"
+  | "manually_closed";
+
+export type RecommendationLedgerItem = {
+  id: string;
+  createdAt: string;
+  marketType: "stock" | "polymarket";
+  tradeCategory: "DAY_TRADE" | "LONG_TERM" | "POLYMARKET";
+  tickerOrMarket: string;
+  title: string;
+  recommendation: "WATCH" | "PAPER_TRADE" | "SKIP" | "AVOID" | "PAPER_YES" | "PAPER_NO";
+  entryZone: string;
+  stopOrInvalidation: string;
+  target1: string;
+  target2: string;
+  currentPriceOrOddsAtRecommendation: string;
+  confidence: Confidence;
+  riskLevel: RiskLevel;
+  catalystType: string;
+  signalTypes: string[];
+  strategyTags: string[];
+  sourceDataUsed: string[];
+  beginnerThesis: string;
+  whyNow: string;
+  whySkip: string;
+  maxRisk: "$2-$5";
+  status: RecommendationStatus;
+  userActuallyEntered: "yes" | "no" | "unknown";
+  userEntryPrice: string;
+  userPositionSize: string;
+  userNotes: string;
+  finalOutcome: string;
+  resultPct: number | null;
+  lessonLearned: string;
+  learningAdjustment: number;
+  learningAdjustmentReason: string;
+  lastCheckedAt: string | null;
+  lastAlertedStatus: RecommendationStatus | null;
+};
+
+export type RecommendationLedgerResponse = {
+  ok: boolean;
+  storageSource: "server" | "local fallback";
+  recommendations: RecommendationLedgerItem[];
+  warning?: string;
+  error?: string;
+};
+
+export type LearningAnalytics = {
+  totalRecommendations: number;
+  winRateByCategory: Record<string, number>;
+  winRateBySignalType: Record<string, number>;
+  winRateByCatalystType: Record<string, number>;
+  winRateByScoreBucket: Record<string, number>;
+  averageResultByConfidence: Record<string, number>;
+  bestPerformingSetupType: string;
+  worstPerformingSetupType: string;
+  missedWinners: number;
+  avoidedLosers: number;
+  overconfidenceWarning: string;
+  systemGoodAt: string;
+  systemBadAt: string;
+};
