@@ -180,7 +180,7 @@ function makePolymarketActionPlan(market: PolymarketOpportunity): BeginnerAction
   };
 }
 
-function stockToOpportunity(setup: SetupReport, secSignal?: SecEightKSignal, earningsSignal?: EarningsSignal): UnifiedOpportunity {
+export function stockToOpportunity(setup: SetupReport, secSignal?: SecEightKSignal, earningsSignal?: EarningsSignal): UnifiedOpportunity {
   const catalyst = classifyStockCatalyst(setup.news, setup.ai.catalyst);
   const catalystBadges = [secSignal?.badge, earningsSignal?.badge].filter((badge): badge is NonNullable<typeof badge> => Boolean(badge));
   const monitorNext = [
@@ -228,7 +228,7 @@ function stockToOpportunity(setup: SetupReport, secSignal?: SecEightKSignal, ear
   };
 }
 
-function polymarketToOpportunity(market: PolymarketOpportunity): UnifiedOpportunity {
+export function polymarketToOpportunity(market: PolymarketOpportunity): UnifiedOpportunity {
   const catalyst = classifyPolymarketCatalyst(market);
   return {
     id: `polymarket-${market.id}`,
@@ -256,7 +256,7 @@ function polymarketToOpportunity(market: PolymarketOpportunity): UnifiedOpportun
   };
 }
 
-function makeEarningsWatchItems(signals: Record<string, EarningsSignal>) {
+export function makeEarningsWatchItems(signals: Record<string, EarningsSignal>) {
   return Object.values(signals).map((signal) => ({
     ticker: signal.ticker,
     status: signal.reportingToday ? ("today" as const) : signal.reportingSoon ? ("soon" as const) : signal.confidence === "low" ? ("unavailable" as const) : ("available" as const),
@@ -272,7 +272,7 @@ function makeEarningsWatchItems(signals: Record<string, EarningsSignal>) {
   }));
 }
 
-function makeReport(
+export function makeReport(
   title: IntelligenceReport["title"],
   opportunities: UnifiedOpportunity[],
   topCrossMarketInsight: IntelligenceReport["topCrossMarketInsight"]

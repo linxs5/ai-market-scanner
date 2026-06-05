@@ -121,6 +121,37 @@ type PersistenceStatus = {
   message: string;
 };
 
+type PipelineTiming = {
+  name: string;
+  ms: number;
+  slow: boolean;
+};
+
+type FastScanStageResponse = {
+  ok: boolean;
+  generatedAt: string;
+  stockScan: ScanResponse | null;
+  stockError: string | null;
+  polymarketScan: PolymarketScanResponse;
+  warnings: string[];
+  timings: PipelineTiming[];
+};
+
+type OpportunityScoreStageResponse = {
+  ok: boolean;
+  generatedAt: string;
+  engine: OpportunityEngineResponse;
+  timings: PipelineTiming[];
+  warnings: string[];
+};
+
+type RecommendationBuilderStageResponse = OpportunityScoreStageResponse & {
+  recommendationLedger?: {
+    saved: boolean;
+    warning: string | null;
+  };
+};
+
 type BlobDiagnostics = {
   blobAvailable: boolean;
   readTestOk: boolean;
@@ -219,6 +250,8 @@ export default function Home() {
   const [sendOpportunityTelegram, setSendOpportunityTelegram] = useState(false);
   const [paperTradeStorage, setPaperTradeStorage] = useState("localStorage fallback");
   const [beginnerMode, setBeginnerMode] = useState(true);
+  const [pipelineStep, setPipelineStep] = useState("Idle");
+  const [pipelineTimings, setPipelineTimings] = useState<PipelineTiming[]>([]);
   const [persistenceStatus, setPersistenceStatus] = useState<PersistenceStatus>({
     state: "idle",
     source: "none",
@@ -558,17 +591,36 @@ export default function Home() {
     setLoading("opportunity");
     setError(null);
     setActiveTab("Top Opportunities");
+    setPipelineTimings([]);
+    setPipelineStep("Step 1/3: Fast Scan");
     setOpportunityAlertStatus({
       state: "idle",
       message: sendOpportunityTelegram ? "Telegram alert pending" : "Telegram alert skipped",
       warnings: []
     });
     try {
-      const result = await safeJsonFetch<OpportunityEngineResponse>("/.netlify/functions/run-opportunity-engine", { method: "POST" });
+      const fastScan = await safeJsonFetch<FastScanStageResponse>("/.netlify/functions/run-fast-scan", { method: "POST" });
+      setPipelineTimings(fastScan.timings);
+      setStockScan(fastScan.stockScan);
+      setPolyScan(fastScan.polymarketScan);
+      persistAppState({
+        stockScan: fastScan.stockScan,
+        polymarketScan: fastScan.polymarketScan,
+        lastScanAt: fastScan.generatedAt
+      });
+
+      setPipelineStep("Step 2/3: Opportunity Scoring");
+      const scored = await safeJsonFetch<OpportunityScoreStageResponse>("/.netlify/functions/run-opportunity-score", { method: "POST" });
+      setPipelineTimings(scored.timings);
+
+      setPipelineStep("Step 3/3: Recommendation Builder");
+      const built = await safeJsonFetch<RecommendationBuilderStageResponse>("/.netlify/functions/run-recommendation-builder", { method: "POST" });
+      setPipelineTimings(built.timings);
+      const result = built.engine;
       const nextCrossMarket = {
         generatedAt: result.generatedAt,
         stockScan: result.stockScan,
-        stockError: result.stockScan ? null : result.warnings.find((warning) => warning.includes("Stock opportunity scan skipped")) ?? null,
+        stockError: result.stockScan ? null : fastScan.stockError ?? result.warnings.find((warning) => warning.includes("Stock opportunity scan skipped")) ?? null,
         polymarketScan: result.polymarketScan,
         insights: result.crossMarketInsights
       };
@@ -597,8 +649,10 @@ export default function Home() {
       await maybeSendOpportunityTelegramAlerts(result.opportunities);
       await loadRecommendationLedgerNow();
       await loadSavedReportsNow();
+      setPipelineStep("Complete");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Opportunity engine failed.");
+      setPipelineStep("Failed");
       setOpportunityAlertStatus({
         state: "skipped",
         message: "Telegram alert skipped",
@@ -916,6 +970,8 @@ export default function Home() {
             loading={loading === "opportunity"}
             onRun={runOpportunityEngineNow}
             alertStatus={opportunityAlertStatus}
+            pipelineStep={pipelineStep}
+            pipelineTimings={pipelineTimings}
           />
         ) : null}
         {activeTab === "Daily Playbook" ? (
@@ -1250,12 +1306,16 @@ function TopOpportunitiesPanel({
   engine,
   loading,
   onRun,
-  alertStatus
+  alertStatus,
+  pipelineStep,
+  pipelineTimings
 }: {
   engine: OpportunityEngineResponse | null;
   loading: boolean;
   onRun: () => void;
   alertStatus: OpportunityAlertStatus;
+  pipelineStep: string;
+  pipelineTimings: PipelineTiming[];
 }) {
   const top = engine?.opportunities.slice(0, 10) ?? [];
   return (
@@ -1267,6 +1327,7 @@ function TopOpportunitiesPanel({
         <Metric icon={<Brain />} label="Data confidence" value={top[0]?.dataConfidence ?? "Run engine"} />
       </div>
       <ScannerHeader title="Opportunity intelligence engine" subtitle="Unifies stock movers, Polymarket movers, catalysts, macro risk, reports, and cross-market hypotheses." onRun={onRun} loading={loading} />
+      <PipelineProgressPanel step={pipelineStep} timings={pipelineTimings} />
       <AlertStatusPanel status={alertStatus} />
       {loading ? <LoadingState text="Ranking stock and Polymarket research opportunities..." /> : null}
       {!loading && !engine ? <EmptyState text="Run the opportunity engine to rank multi-market research ideas." /> : null}
@@ -1357,6 +1418,28 @@ function TodayActionPlanPanel({
 
 function DailySection({ title, items }: { title: string; items: string[] }) {
   return <List title={title} items={items.length ? items : ["No ideas saved for this section yet."]} />;
+}
+
+function PipelineProgressPanel({ step, timings }: { step: string; timings: PipelineTiming[] }) {
+  return (
+    <div className="rounded-md border border-terminal-line bg-terminal-panel p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-lg font-semibold text-white">Pipeline Progress</h2>
+        <span className={badgeClass(step === "Complete" ? "green" : step === "Failed" ? "red" : step === "Idle" ? "blue" : "yellow")}>{step}</span>
+      </div>
+      <div className="mt-3 grid gap-3 sm:grid-cols-3">
+        <Info title="Fast Scan" text={formatPipelineTiming(timings, ["Finnhub market scan", "Polymarket scan", "SEC scan", "Earnings scan"])} />
+        <Info title="Scoring" text={formatPipelineTiming(timings, ["Opportunity scoring"])} />
+        <Info title="Recommendations" text={formatPipelineTiming(timings, ["Recommendation builder"])} />
+      </div>
+      {timings.some((timing) => timing.slow) ? <WarningList items={timings.filter((timing) => timing.slow).map((timing) => `WARN: Slow operation detected - ${timing.name} ${timing.ms} ms`)} /> : null}
+    </div>
+  );
+}
+
+function formatPipelineTiming(timings: PipelineTiming[], names: string[]) {
+  const total = timings.filter((timing) => names.includes(timing.name)).reduce((sum, timing) => sum + timing.ms, 0);
+  return total ? `${total} ms` : "Pending";
 }
 
 function calloutStatus(plan: LiveCalloutPlan, reportTimestamp?: string): LiveCalloutPlan["status"] {
@@ -1749,7 +1832,7 @@ function ActiveTradesPanel({
 }) {
   const active = recommendations.filter((item) => ["waiting_for_trigger", "user_entered", "triggered", "recommended"].includes(item.status));
   async function runMonitor() {
-    await safeJsonFetch("/.netlify/functions/active-trade-monitor", { method: "POST" }).catch(() => null);
+    await safeJsonFetch("/.netlify/functions/run-monitor", { method: "POST" }).catch(() => null);
     await onRefresh();
   }
   return (
@@ -1782,7 +1865,7 @@ function AutoPaperTradesPanel({
     ["Good skip", autoPaper.filter((item) => item.status === "good_skip")]
   ] as const;
   async function runMonitor() {
-    await safeJsonFetch("/.netlify/functions/active-trade-monitor", { method: "POST" }).catch(() => null);
+    await safeJsonFetch("/.netlify/functions/run-monitor", { method: "POST" }).catch(() => null);
     await onRefresh();
   }
   return (

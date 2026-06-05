@@ -22,7 +22,7 @@ const responseSchema = z.object({
   setups: z.array(setupSchema)
 });
 
-function fallbackReport(setup: ScoredSetupInput, regime: MarketRegime): AiSetupReport {
+export function fallbackReport(setup: ScoredSetupInput, regime: MarketRegime): AiSetupReport {
   const price = setup.quote.price;
   const stop = Math.max(0, price * 0.97);
   const target = price * 1.05;

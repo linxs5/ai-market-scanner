@@ -2,15 +2,14 @@ import type { Handler } from "@netlify/functions";
 import { errorResponse, jsonResponse } from "../../lib/server/http";
 import { runRecommendationBuilderStage } from "../../lib/server/opportunity-pipeline";
 
-const ENDPOINT = "run-opportunity-engine";
+const ENDPOINT = "run-recommendation-builder";
 
 export const handler: Handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return jsonResponse({});
   try {
     if (!["GET", "POST"].includes(event.httpMethod)) return errorResponse("Method not allowed.", 405, null, ENDPOINT);
-    const built = await runRecommendationBuilderStage(event);
-    return jsonResponse({ ...built.engine, recommendationLedger: built.recommendationLedger, pipeline: { timings: built.timings } });
+    return jsonResponse(await runRecommendationBuilderStage(event));
   } catch (error) {
-    return errorResponse("Opportunity engine compatibility endpoint requires saved scoring data. Run fast scan and scoring first.", 500, error instanceof Error ? error.message : error, ENDPOINT);
+    return errorResponse("Recommendation builder failed.", 500, error instanceof Error ? error.message : error, ENDPOINT);
   }
 };
